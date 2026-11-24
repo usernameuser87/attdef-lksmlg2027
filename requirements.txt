@@ -1,0 +1,5 @@
+# No external dependencies.
+# The framework uses only the Python 3.8+ standard library
+# (urllib, subprocess, json, concurrent.futures, time).
+# Keep it that way: on competition day there may be no pip, no
+# internet, and no time to install anything.

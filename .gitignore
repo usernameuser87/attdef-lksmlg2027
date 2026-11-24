@@ -1,0 +1,15 @@
+# Secrets — never commit.
+.env
+
+# Runtime state (submitted flags, submission queue).
+data/
+logs/
+
+# Test artefacts.
+tests/logs/
+tests/data/
+
+# Python.
+__pycache__/
+*.pyc
+.venv/

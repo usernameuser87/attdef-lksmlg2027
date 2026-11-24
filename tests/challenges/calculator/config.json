@@ -1,0 +1,1 @@
+{"enabled": true, "health_path": "/health", "name": "Calculator", "port": 18080, "protocol": "http", "script": "exploit.sh", "timeout": 10}

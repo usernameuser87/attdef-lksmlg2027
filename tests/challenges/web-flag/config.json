@@ -1,0 +1,1 @@
+{"enabled": true, "health_path": "/health", "name": "Web Flag", "port": 18080, "protocol": "http", "script": "exploit.sh", "timeout": 10}

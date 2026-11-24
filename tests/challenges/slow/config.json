@@ -1,0 +1,1 @@
+{"enabled": false, "health_path": "/health", "name": "Slow", "port": 18080, "protocol": "http", "script": "exploit.sh", "timeout": 15}

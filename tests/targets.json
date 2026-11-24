@@ -1,0 +1,4 @@
+[
+  {"name": "Test Team A", "ip": "127.0.0.1"},
+  {"name": "Test Team B (offline)", "ip": "127.0.0.2"}
+]

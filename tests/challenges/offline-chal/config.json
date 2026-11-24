@@ -1,0 +1,1 @@
+{"enabled": true, "health_path": "/health", "name": "Offline Chal", "port": 18082, "protocol": "http", "script": "exploit.sh", "timeout": 10}
