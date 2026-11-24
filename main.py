@@ -44,9 +44,13 @@ _DISPLAY_VERDICT = {
 def run_round(round_no, targets, challenges, logger, submitter):
     """One full round. Returns nothing; never raises (errors are logged)."""
     started = time.monotonic()
-    logger.open_round(round_no)
-    logger.line(f"[ROUND {round_no}] START")
     try:
+        # open_round is inside the try: if the log file cannot be
+        # created (disk full, permissions), the round must still run
+        # and the framework must not crash — the docstring promises
+        # this function never raises.
+        logger.open_round(round_no)
+        logger.line(f"[ROUND {round_no}] START")
         pairs = [(t, c) for t in targets for c in challenges]
         online = check_all(pairs)
 

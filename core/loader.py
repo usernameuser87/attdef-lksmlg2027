@@ -82,6 +82,13 @@ def load_challenges(challenges_dir: Path | None = None) -> list[Challenge]:
         if protocol not in ("http", "https", "tcp"):
             print(f"[WARN] {folder.name}: unknown protocol {protocol!r}; skipped")
             continue
+        # A health_path without a leading slash ("health" instead of
+        # "/health") used to build "http://IP:PORThealth" — an invalid
+        # URL that crashed the health check and wrongly marked the
+        # pair offline. Normalise it here.
+        health_path = str(raw.get("health_path", ""))
+        if health_path and not health_path.startswith("/"):
+            health_path = "/" + health_path
         script_name = str(raw.get("script", "exploit.sh"))
         script = folder / script_name
         if not script.exists():
@@ -92,7 +99,7 @@ def load_challenges(challenges_dir: Path | None = None) -> list[Challenge]:
                 name=name,
                 port=port,
                 protocol=protocol,
-                health_path=str(raw.get("health_path", "")),
+                health_path=health_path,
                 timeout=timeout,
                 script=script,
                 enabled=bool(raw.get("enabled", True)),

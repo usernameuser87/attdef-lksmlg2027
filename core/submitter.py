@@ -221,19 +221,44 @@ class Submitter:
     def _load(self) -> None:
         try:
             data = json.loads(config.SUBMITTED_FILE.read_text(encoding="utf-8"))
-            self.accepted = set(data.get("accepted", []))
-            self.rejected = set(data.get("rejected", []))
         except (OSError, ValueError):
+            data = None
+        # A corrupt submitted.json must never crash startup, and a
+        # non-dict payload (e.g. a bare list) must not raise either:
+        # keep only the valid flag strings, drop the rest.
+        # A non-LIST value (e.g. "accepted": "LKS{ABC}") must also be
+        # ignored — iterating a string would shred it into single
+        # characters and the flag would be submitted again forever.
+        def _flag_set(value):
+            if not isinstance(value, list):
+                return set()
+            return {str(f) for f in value if isinstance(f, str)}
+
+        if isinstance(data, dict):
+            self.accepted = _flag_set(data.get("accepted"))
+            self.rejected = _flag_set(data.get("rejected"))
+        else:
             self.accepted, self.rejected = set(), set()
         try:
             data = json.loads(config.QUEUE_FILE.read_text(encoding="utf-8"))
-            self.queue = [
-                {"flag": str(item["flag"]), "attempts": int(item.get("attempts", 0))}
-                for item in data
-                if isinstance(item, dict) and item.get("flag")
-            ]
-        except (OSError, ValueError, KeyError, TypeError):
-            self.queue = []
+        except (OSError, ValueError):
+            data = None
+        # Per-item tolerance: ONE bad entry (e.g. "attempts": "abc")
+        # used to raise inside the list comprehension and wipe the
+        # WHOLE queue — every queued flag lost, even the good ones.
+        # Now bad entries are skipped and the rest survive.
+        self.queue = []
+        if isinstance(data, list):
+            for item in data:
+                if not isinstance(item, dict) or not item.get("flag"):
+                    continue
+                try:
+                    attempts = int(item.get("attempts", 0))
+                except (TypeError, ValueError):
+                    attempts = 0
+                self.queue.append(
+                    {"flag": str(item["flag"]), "attempts": attempts}
+                )
 
     def _save(self) -> None:
         _atomic_write_json(
@@ -344,7 +369,10 @@ class Submitter:
                 self.queue.append(item)
                 queued[flag] = item
             item["attempts"] += 1
-            if item["attempts"] >= config.SUBMIT_MAX_RETRIES:
+            if item["attempts"] == config.SUBMIT_MAX_RETRIES:
+                # Log once, when the threshold is crossed — not every
+                # round afterwards, or the log fills with one line per
+                # queued flag per round during a long outage.
                 self._log(
                     f"SUBMIT {flag} exceeded {config.SUBMIT_MAX_RETRIES} "
                     f"retries ({reason}); kept in queue, will keep retrying"

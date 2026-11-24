@@ -14,9 +14,11 @@ the target not in no_proxy, plain urlopen fails with URLError
 Use direct_opener().open(...) everywhere the framework talks HTTP.
 """
 
+import ssl
 import urllib.request
 
 _OPENER = None
+_UNVERIFIED_OPENER = None
 
 
 def direct_opener():
@@ -25,3 +27,21 @@ def direct_opener():
     if _OPENER is None:
         _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     return _OPENER
+
+
+def direct_opener_unverified():
+    """Like direct_opener(), but also skips TLS certificate checks.
+
+    Only for health checks: they send no credentials, they only ask
+    "is something alive here". CTF services very often use self-signed
+    certificates, and a strict check would mark them OFFLINE forever.
+    """
+    global _UNVERIFIED_OPENER
+    if _UNVERIFIED_OPENER is None:
+        _UNVERIFIED_OPENER = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            urllib.request.HTTPSHandler(
+                context=ssl._create_unverified_context()
+            ),
+        )
+    return _UNVERIFIED_OPENER

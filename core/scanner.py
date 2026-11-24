@@ -13,14 +13,16 @@ finish in seconds, not minutes. A single slow target can never block the
 round: every check has its own hard timeout.
 """
 
+import http.client
 import socket
+import ssl
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 import config
 from core.loader import Challenge
-from core.net import direct_opener
+from core.net import direct_opener, direct_opener_unverified
 
 
 def check_one(ip: str, challenge: Challenge, timeout: float | None = None) -> bool:
@@ -36,7 +38,26 @@ def check_one(ip: str, challenge: Challenge, timeout: float | None = None) -> bo
         except urllib.error.HTTPError as exc:
             # Any HTTP response means the service is alive.
             return exc.code < 500
-        except (urllib.error.URLError, OSError, TimeoutError, ValueError):
+        except urllib.error.URLError as exc:
+            # Self-signed / untrusted certificate: the service IS alive,
+            # only its certificate is untrusted — retry the liveness
+            # check without verification. A health check sends no
+            # credentials, so this leaks nothing. Without this, any
+            # https challenge with a self-signed cert is marked
+            # OFFLINE forever and its exploit never runs.
+            if isinstance(exc.reason, ssl.SSLError):
+                try:
+                    with direct_opener_unverified().open(
+                        req, timeout=timeout
+                    ) as resp:
+                        return resp.status < 500
+                except urllib.error.HTTPError as exc2:
+                    return exc2.code < 500
+                except (urllib.error.URLError, OSError, TimeoutError,
+                        ValueError, http.client.HTTPException):
+                    return False
+            return False
+        except (OSError, TimeoutError, ValueError, http.client.HTTPException):
             return False
     # tcp: connect only.
     try:

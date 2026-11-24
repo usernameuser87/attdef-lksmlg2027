@@ -37,8 +37,13 @@ _CURL_PROGRESS_RE = re.compile(
     r"^[^\n]*%\s+Total\s+%\s+Received[^\n]*\n?",
     re.IGNORECASE | re.MULTILINE,
 )
+# A meter data row starts with a number AND carries curl's "--:--:--"
+# time columns. The old pattern matched ANY line starting with a
+# percentage, so an exploit printing e.g. "50% done LKS{...}" lost its
+# flag. Requiring both keeps real meter rows stripped and real output
+# safe.
 _CURL_PROGRESS_ROW_RE = re.compile(
-    r"^[ \t]*\d+(?:\.\d+)?%[^\n]*\n?", re.MULTILINE
+    r"^[ \t]*\d+[^\n]*--:--:--[^\n]*\n?", re.MULTILINE
 )
 
 _TAG_RE = re.compile(r"<[^>]*>")

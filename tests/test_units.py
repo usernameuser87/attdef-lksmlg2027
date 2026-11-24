@@ -8,13 +8,15 @@ Exit code 0 = all pass.
 import json
 import math
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import config  # noqa: E402
 from core.parser import clean, extract_flags  # noqa: E402
 from core.scheduler import Scheduler, next_round_index  # noqa: E402
-from core.submitter import _parse_response  # noqa: E402
+from core.submitter import Submitter, _parse_response  # noqa: E402
 
 FAILURES = []
 
@@ -64,6 +66,14 @@ check("flag with punctuation inside",
       extract_flags("LKS{a-b_c.d:e!f}"), ["LKS{a-b_c.d:e!f}"])
 check("clean() keeps text, drops tags",
       clean("<p>hello</p> world"), "hello world")
+check("flag survives a line starting with a percentage",
+      extract_flags("50% done LKS{PERCENT}"), ["LKS{PERCENT}"])
+check("real curl meter rows are still stripped",
+      extract_flags("  % Total    % Received % Xferd\n"
+                    "100  1234  100  1234    0     0  12345      0 "
+                    "--:--:-- --:--:-- --:--:-- 12345\n"
+                    "LKS{METER}"),
+      ["LKS{METER}"])
 
 # ---------------------------------------------------------------------------
 # Submitter response parsing — incl. the REAL scoreboard {"flag","msg"}
@@ -241,6 +251,80 @@ _res2 = _run_one({"name": "T", "ip": "127.0.0.1"}, _rel_loaded[0])
 check("exploit runs from a relative dir",
       "LKS{RELATIVE}" in _res2.stdout, True)
 
+# A health_path without a leading slash ("health") used to build
+# "http://IP:PORThealth" — an InvalidURL that crashed check_one and
+# wrongly marked the pair offline. The loader normalises it, and the
+# scanner now treats any URL error as offline instead of raising.
+print("[loader/scanner: health_path without slash]")
+_noslash_dir = Path(_tempfile.mkdtemp())
+(_noslash_dir / "noslash").mkdir()
+(_noslash_dir / "noslash" / "config.json").write_text(
+    json.dumps({"name": "NoSlash", "port": 8081, "protocol": "http",
+                "health_path": "health", "script": "exploit.sh"}),
+    encoding="utf-8")
+(_noslash_dir / "noslash" / "exploit.sh").write_text("true\n",
+                                                     encoding="utf-8")
+_noslash = _load_challenges(_noslash_dir)
+check("health_path normalised to /health",
+      _noslash[0].health_path, "/health")
+from core.scanner import check_one as _check_one  # noqa: E402
+_raw = _Challenge(name="Raw", port=18080, protocol="http",
+                  health_path="health", timeout=1, script=_script,
+                  enabled=True, folder=Path(_tmp))
+try:
+    _ok = _check_one("127.0.0.1", _raw, timeout=1)
+    check("unnormalised health_path does not raise", True, True)
+    check("unnormalised health_path -> offline", _ok, False)
+except Exception as _e:
+    check("unnormalised health_path does not raise", False, True)
+
+# submitted.json with a string instead of a list must not shred the
+# flag into single characters.
+print("[submitter: corrupt submitted.json]")
+import os as _os3
+
+from core.submitter import Submitter as _Submitter  # noqa: E402
+
+_corr = Path(_tempfile.mkdtemp())
+(_corr / "submitted.json").write_text(
+    json.dumps({"accepted": "LKS{ABC}", "rejected": ["LKS{DEF}"]}),
+    encoding="utf-8")
+_sub = _Submitter.__new__(_Submitter)
+_sub.logger = None
+_sub.accepted, _sub.rejected, _sub.queue = set(), set(), []
+_sub.last_details = {}
+# Point the submitter at the corrupt file by patching config paths.
+import config as _cfg  # noqa: E402
+_old_sub, _old_q = _cfg.SUBMITTED_FILE, _cfg.QUEUE_FILE
+_cfg.SUBMITTED_FILE, _cfg.QUEUE_FILE = (_corr / "submitted.json",
+                                        _corr / "queue.json")
+try:
+    _sub._load()
+finally:
+    _cfg.SUBMITTED_FILE, _cfg.QUEUE_FILE = _old_sub, _old_q
+check("string accepted -> empty set (no single chars)",
+      _sub.accepted, set())
+check("valid rejected list still loads",
+      _sub.rejected, {"LKS{DEF}"})
+
+# An empty ATTDEF_LOGS_DIR / ATTDEF_DATA_DIR must mean "default",
+# not Path(".") (which would scatter state files into the cwd).
+print("[config: empty LOGS_DIR/DATA_DIR fall back to defaults]")
+import subprocess as _sp
+
+_out = _sp.run(
+    [sys.executable, "-c",
+     "import os; os.environ['ATTDEF_LOGS_DIR']=''; "
+     "os.environ['ATTDEF_DATA_DIR']=''; import config; "
+     "print(config.LOGS_DIR); print(config.DATA_DIR)"],
+    capture_output=True, text=True, cwd=str(Path(__file__).resolve().parent.parent),
+)
+_lines = _out.stdout.strip().splitlines()
+check("empty LOGS_DIR -> default logs dir",
+      _lines[0].endswith("/logs") if _lines else False, True)
+check("empty DATA_DIR -> default data dir",
+      _lines[1].endswith("/data") if len(_lines) > 1 else False, True)
+
 # ---------------------------------------------------------------------------
 # Scheduler (pure function)
 # ---------------------------------------------------------------------------
@@ -297,6 +381,88 @@ check("fast round: next index 3", nxt, 3)
 check("fast round: 0 skipped", skipped, 0)
 check("wait to index 3 sleeps 4s (1011 -> 1015)",
       (sch.wait_until(3), fake.slept[-1]), (1015.0, 4.0))
+
+# ---------------------------------------------------------------------------
+# Submitter state loading — one bad entry must not wipe the whole queue
+# ---------------------------------------------------------------------------
+print("[submitter: state loading]")
+
+
+def _load_submitter(submitted_text, queue_text):
+    """Build a Submitter over temp state files; returns it."""
+    tmp = Path(tempfile.mkdtemp())
+    config.DATA_DIR = tmp
+    config.SUBMITTED_FILE = tmp / "submitted.json"
+    config.QUEUE_FILE = tmp / "queue.json"
+    if submitted_text is not None:
+        config.SUBMITTED_FILE.write_text(submitted_text, encoding="utf-8")
+    if queue_text is not None:
+        config.QUEUE_FILE.write_text(queue_text, encoding="utf-8")
+    return Submitter()
+
+
+sub = _load_submitter(
+    None,
+    json.dumps([
+        {"flag": "LKS{GOOD1}", "attempts": 2},
+        {"flag": "LKS{GOOD2}", "attempts": "abc"},  # corrupt value
+        {"flag": "LKS{GOOD3}"},                     # no attempts key
+        {"no_flag": True},                          # not a flag entry
+    ]),
+)
+check("corrupt attempts value keeps the good flags",
+      [i["flag"] for i in sub.queue],
+      ["LKS{GOOD1}", "LKS{GOOD2}", "LKS{GOOD3}"])
+check("corrupt attempts defaults to 0",
+      [i["attempts"] for i in sub.queue], [2, 0, 0])
+sub = _load_submitter("[1, 2, 3]", "not json at all")  # non-dict / bad JSON
+check("submitted.json as bare list does not crash",
+      (sub.accepted, sub.rejected, sub.queue), (set(), set(), []))
+sub = _load_submitter(None, json.dumps({"a": 1}))  # queue as dict
+check("queue.json as dict loads as empty, no crash", sub.queue, [])
+
+# ---------------------------------------------------------------------------
+# Scanner — https with a self-signed cert must read ONLINE, not OFFLINE
+# ---------------------------------------------------------------------------
+print("[scanner: https self-signed]")
+import shutil
+import ssl as _ssl
+import subprocess as _subprocess
+import threading as _threading
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+
+from core.loader import Challenge as _Challenge
+from core.scanner import check_one as _check_one
+
+
+def _https_challenge(port):
+    return _Challenge(
+        name="t", port=port, protocol="https", health_path="/",
+        timeout=3.0, script=Path("x"), enabled=True, folder=Path("."),
+    )
+
+
+if shutil.which("openssl") is None:
+    print("  SKIP  openssl not available (https self-signed test)")
+else:
+    _tmp = Path(tempfile.mkdtemp())
+    _subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "rsa:2048",
+         "-keyout", str(_tmp / "key.pem"), "-out", str(_tmp / "cert.pem"),
+         "-days", "2", "-nodes", "-subj", "/CN=127.0.0.1"],
+        check=True, capture_output=True,
+    )
+    _ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_SERVER)
+    _ctx.load_cert_chain(str(_tmp / "cert.pem"), str(_tmp / "key.pem"))
+    _srv = HTTPServer(("127.0.0.1", 0), SimpleHTTPRequestHandler)
+    _srv.socket = _ctx.wrap_socket(_srv.socket, server_side=True)
+    _port = _srv.server_address[1]
+    _threading.Thread(target=_srv.serve_forever, daemon=True).start()
+    check("https self-signed cert -> ONLINE",
+          _check_one("127.0.0.1", _https_challenge(_port)), True)
+    _srv.shutdown()
+    check("https dead port -> OFFLINE",
+          _check_one("127.0.0.1", _https_challenge(_port)), False)
 
 print()
 if FAILURES:

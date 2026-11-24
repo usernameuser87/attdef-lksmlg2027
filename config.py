@@ -144,8 +144,14 @@ if EXEC_WORKERS < 1:
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-LOGS_DIR = Path(os.environ.get("ATTDEF_LOGS_DIR", str(BASE_DIR / "logs")))
-DATA_DIR = Path(os.environ.get("ATTDEF_DATA_DIR", str(BASE_DIR / "data")))
+LOGS_DIR = Path(
+    os.environ.get("ATTDEF_LOGS_DIR") or str(BASE_DIR / "logs")
+)
+DATA_DIR = Path(
+    os.environ.get("ATTDEF_DATA_DIR") or str(BASE_DIR / "data")
+)
+# An empty string must mean "unset": Path("") is Path("."), which would
+# scatter state files into the current directory.
 SUBMITTED_FILE = DATA_DIR / "submitted.json"
 QUEUE_FILE = DATA_DIR / "queue.json"
 SUBMISSION_LOG = LOGS_DIR / "submissions.log"

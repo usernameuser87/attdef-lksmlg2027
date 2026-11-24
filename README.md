@@ -299,7 +299,7 @@ Satu soal tes lengkap disertakan: mock service rentan + mock scoreboard
 di localhost, jadi tidak menyentuh infrastruktur kompetisi.
 
 ```bash
-python3 tests/test_units.py       # parser + scheduler + submitter + net + runner + loader (48 checks)
+python3 tests/test_units.py       # parser + scheduler + submitter + net + runner + loader + scanner (63 checks)
 python3 tests/test_framework.py   # end-to-end (29 checks)
 ```
 
@@ -318,7 +318,7 @@ Yang diverifikasi `test_framework.py`:
   tepat di grid (10.00 detik setelah round 1), tidak ada round yang
   tumpang tindih, dan flag dari challenge lambat itu tetap terkirim.
 
-Hasil terakhir: **48/48 unit tests PASS, 29/29 end-to-end PASS.**
+Hasil terakhir: **63/63 unit tests PASS, 29/29 end-to-end PASS.**
 
 ## Bug yang ditemukan & diperbaiki (2026-11-24)
 
@@ -354,6 +354,63 @@ Bug hunt setelah tes submit manual melawan scoreboard asli:
 7. **Nilai env yang buruk membuat crash saat startup.** `ATTDEF_TICK=0`
    atau worker `0` membuat `Scheduler`/`ThreadPoolExecutor` melempar
    `ValueError` tanpa penanganan. Sekarang dikembalikan ke default.
+
+## Bug hunt putaran 2 (2026-11-24 malam, belum di-push)
+
+8. **Satu entri antrean yang rusak menghapus SELURUH antrean (kritis).**
+   `Submitter._load()` membangun `queue` dengan list comprehension —
+   satu entri dengan `"attempts": "abc"` membuat `int()` melempar
+   `ValueError`, `except` mereset `self.queue = []`, dan semua flag
+   yang menunggu retry hilang (flag rotate, jadi tidak kembali).
+   Sekarang tiap entri dibaca dengan toleransi per-item: entri rusak
+   dilewati / `attempts` jatuh ke 0, flag yang bagus tetap selamat.
+   Bonus dari perbaikan yang sama: `submitted.json` yang isinya bukan
+   dict (mis. list) dulu membuat `data.get()` melempar `AttributeError`
+   yang tidak tertangkap — framework crash saat startup. Sekarang
+   hanya string flag yang valid yang dipakai.
+9. **Challenge https dengan sertifikat self-signed selalu OFFLINE.**
+   Health check memakai verifikasi TLS default, jadi service https
+   dengan cert self-signed (sangat umum di CTF) gagal verifikasi dan
+   exploit-nya tidak pernah jalan — diam-diam, tanpa error. Sekarang
+   kalau verifikasi gagal karena sertifikat, health check diulang
+   tanpa verifikasi (`core/net.py: direct_opener_unverified()`).
+   Health check tidak mengirim kredensial, jadi ini tidak membocorkan
+   apa pun; exploit Bash-nya sendiri tetap pakai aturan curl masing-masing.
+10. **Log spam saat scoreboard lama mati.** Peringatan "exceeded retries"
+    dicetak setiap round untuk setiap flag yang mengantre (sekali flag
+    melewati batas). Sekarang hanya dicetak sekali, saat batas itu
+    pertama kali terlampaui.
+11. **`health_path` tanpa slash depan membuat pair salah OFFLINE.**
+    `config.json` dengan `"health_path": "health"` membangun URL
+    `http://IP:PORThealth` — `InvalidURL` yang tidak tertangkap
+    `check_one`, sehingga service yang sebenarnya hidup ditandai
+    offline dan exploit-nya tidak pernah jalan. Sekarang loader
+    menormalkan path (tambah `/` kalau belum ada) dan scanner
+    menganggap segala error URL sebagai offline, bukan crash.
+12. **`submitted.json` yang isinya string menghancurkan state.**
+    `"accepted": "LKS{ABC}"` (bukan list) membuat set comprehension
+    mengiterasi string itu per karakter — `accepted` jadi
+    `{'L', 'K', 'S', ...}` dan flag aslinya tidak pernah tercatat
+    diterima, jadi dikirim ulang selamanya. Sekarang hanya nilai list
+    yang dipakai; yang lain diabaikan.
+13. **`ATTDEF_LOGS_DIR=""` / `ATTDEF_DATA_DIR=""` menyebar file state.**
+    `Path("")` sama dengan `Path(".")`, jadi file log dan `submitted.json`
+    / `queue.json` tertulis ke direktori kerja, bukan ke `logs/` /
+    `data/`. Sekarang string kosong dianggap "tidak diset" dan fallback
+    ke default.
+14. **Parser memakan flag di baris yang diawali persentase.**
+    Regex pembersih progress meter cocok dengan SEMUA baris yang diawali
+    angka+`%`, jadi output exploit seperti `50% done LKS{...}`
+    kehilangan flag-nya. Sekarang regex mensyaratkan kolom waktu curl
+    (`--:--:--`), jadi hanya baris meter asli yang dibersih.
+15. **`open_round()` di luar `try` di `run_round()`.** Kalau file log
+    tidak bisa dibuat (disk penuh, izin), framework crash padahal
+    docstring menjanjikan fungsi ini tidak pernah raise. Sekarang
+    pembuatan file log ada di dalam `try`.
+
+Tes baru untuk putaran 2 ada di `tests/test_units.py` (submitter state
+loading + https self-signed + health_path + corrupt submitted.json +
+empty env dirs + parser persentase, 15 checks) — total unit jadi 63/63.
 
 ## Catatan
 
