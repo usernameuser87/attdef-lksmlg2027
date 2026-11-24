@@ -15,8 +15,23 @@ Reliability rules:
     never lost because a submission failed.
   * All state files are written atomically (temp file + os.replace).
 
-Response shapes the parser understands (the exact scoreboard format
-is not documented, so several common shapes are accepted):
+Response shapes the parser understands. The REAL scoreboard format
+(verified live 2026-11-24 against the competition endpoint) is a
+JSON array of {"flag": ..., "msg": ...} items — there is NO "status"
+field, the verdict lives inside the message text:
+
+  * [{"flag": "LKS{...}",
+      "msg": "[LKS{...}] Flag accepted! Earned 75.90 flag points!"}]
+  * [{"flag": "LKS{...}",
+      "msg": "[LKS{...}] Flag is invalid or too old."}]
+
+Note the scoreboard lumps "invalid" and "too old" into one message;
+both are terminal, so that message maps to INVALID. The points in an
+accepted message are extracted ("Earned X flag points!") and shown
+in the console/log output.
+
+Older/guessed shapes are still accepted, for the mock server and any
+other scoreboard:
   * {"accepted": [...], "invalid": [...], "too_old": [...],
      "duplicate": [...]}
   * {"results": [{"flag": "...", "status": "accepted"}, ...]}
@@ -27,11 +42,13 @@ Anything else is treated as "unknown" -> the flags stay queued.
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 import config
+from core.net import direct_opener
 
 # Canonical verdicts.
 ACCEPTED = "accepted"
@@ -74,13 +91,58 @@ def _normalise_status(raw) -> str:
     return _STATUS_ALIASES.get(key, UNKNOWN)
 
 
-def _parse_response(body: bytes, sent: list[str]) -> dict[str, str]:
-    """Map every sent flag to a verdict. Unknown shape -> all UNKNOWN."""
+_MSG_POINTS_RE = re.compile(
+    r"Earned\s+([0-9]+(?:\.[0-9]+)?)\s+flag points", re.IGNORECASE
+)
+
+
+def _verdict_from_msg(msg) -> str:
+    """Verdict from a scoreboard message string (real format)."""
+    if not msg:
+        return UNKNOWN
+    text = str(msg).lower()
+    if "flag accepted" in text or "accepted!" in text:
+        return ACCEPTED
+    # The real scoreboard lumps invalid and too-old into one message;
+    # both are terminal, so either mapping lands in "rejected".
+    if "invalid or too old" in text:
+        return INVALID
+    if "too old" in text or "expired" in text:
+        return TOO_OLD
+    if "duplicate" in text or "already submitted" in text:
+        return DUPLICATE
+    if "invalid" in text:
+        return INVALID
+    return UNKNOWN
+
+
+def _points_from_msg(msg):
+    """Points earned, from 'Earned 75.90 flag points!' — else None."""
+    if not msg:
+        return None
+    match = _MSG_POINTS_RE.search(str(msg))
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
+def _parse_response(body: bytes, sent: list[str]):
+    """Map every sent flag to a verdict.
+
+    Returns (verdicts, details):
+      verdicts: {flag: canonical verdict}
+      details:  {flag: {"points": float | None, "msg": str | None}}
+    Unknown shape -> every verdict UNKNOWN (flags stay queued).
+    """
     verdicts = {flag: UNKNOWN for flag in sent}
+    details = {flag: {"points": None, "msg": None} for flag in sent}
     try:
         data = json.loads(body.decode("utf-8", "replace"))
     except (ValueError, UnicodeDecodeError):
-        return verdicts
+        return verdicts, details
     if isinstance(data, dict):
         # Shape 1: {"accepted": [...], "invalid": [...], ...}
         hit = False
@@ -98,7 +160,7 @@ def _parse_response(body: bytes, sent: list[str]) -> dict[str, str]:
                     if flag in verdicts:
                         verdicts[str(flag)] = verdict
         if hit:
-            return verdicts
+            return verdicts, details
         # Shape 2: {"results": [{"flag":..., "status":...}, ...]}
         results = data.get("results")
         if isinstance(results, list):
@@ -107,22 +169,34 @@ def _parse_response(body: bytes, sent: list[str]) -> dict[str, str]:
                     flag = item.get("flag")
                     if flag in verdicts:
                         verdicts[str(flag)] = _normalise_status(item.get("status"))
-            return verdicts
+            return verdicts, details
         # Shape 3: {"flags": {"LKS{...}": "accepted", ...}}
         flags_map = data.get("flags")
         if isinstance(flags_map, dict):
             for flag, status in flags_map.items():
                 if flag in verdicts:
                     verdicts[str(flag)] = _normalise_status(status)
-            return verdicts
+            return verdicts, details
     elif isinstance(data, list):
-        # Shape 4: [{"flag":..., "status":...}, ...]
+        # Shape 4 (REAL scoreboard): [{"flag":..., "msg":...}, ...]
+        # and the guessed variant [{"flag":..., "status":...}, ...].
         for item in data:
-            if isinstance(item, dict):
-                flag = item.get("flag")
-                if flag in verdicts:
-                    verdicts[str(flag)] = _normalise_status(item.get("status"))
-    return verdicts
+            if not isinstance(item, dict):
+                continue
+            flag = item.get("flag")
+            if flag not in verdicts:
+                continue
+            flag = str(flag)
+            msg = item.get("msg", item.get("message"))
+            if item.get("status") is not None:
+                verdicts[flag] = _normalise_status(item.get("status"))
+            elif msg is not None:
+                verdicts[flag] = _verdict_from_msg(msg)
+                details[flag] = {
+                    "points": _points_from_msg(msg),
+                    "msg": str(msg),
+                }
+    return verdicts, details
 
 
 def _atomic_write_json(path: Path, payload) -> None:
@@ -138,6 +212,9 @@ class Submitter:
         self.accepted: set[str] = set()
         self.rejected: set[str] = set()  # terminal non-accepted verdicts
         self.queue: list[dict] = []  # [{"flag": str, "attempts": int}]
+        # Per-flag detail from the most recent submit() call:
+        # {flag: {"points": float | None, "msg": str | None}}.
+        self.last_details: dict[str, dict] = {}
         self._load()
 
     # -- persistent state ---------------------------------------------------
@@ -199,7 +276,8 @@ class Submitter:
             self._enqueue(batch, reason="no token")
             return {flag: ERROR for flag in batch}
 
-        verdicts = self._send(batch)
+        verdicts, details = self._send(batch)
+        self.last_details = details
         for flag, verdict in verdicts.items():
             if verdict == ACCEPTED:
                 self.accepted.add(flag)
@@ -210,12 +288,14 @@ class Submitter:
             else:
                 # ERROR / UNKNOWN: keep it queued, it is not lost.
                 self._enqueue([flag], reason=verdict)
-            self._log(f"SUBMIT {flag} -> {verdict}")
+            points = details.get(flag, {}).get("points")
+            suffix = f" (+{points:.2f} pts)" if points is not None else ""
+            self._log(f"SUBMIT {flag} -> {verdict}{suffix}")
         self._save()
         return verdicts
 
     # -- transport ----------------------------------------------------------
-    def _send(self, batch: list[str]) -> dict[str, str]:
+    def _send(self, batch: list[str]):
         body = json.dumps(batch).encode("utf-8")
         req = urllib.request.Request(
             config.SUBMIT_URL,
@@ -227,22 +307,30 @@ class Submitter:
             },
         )
         try:
-            with urllib.request.urlopen(req, timeout=config.SUBMIT_TIMEOUT) as resp:
+            # Direct connection — never through a proxy (see core/net.py).
+            with direct_opener().open(req, timeout=config.SUBMIT_TIMEOUT) as resp:
                 return _parse_response(resp.read(), batch)
         except urllib.error.HTTPError as exc:
             # The server answered but not 2xx: the body may still carry
             # per-flag verdicts. If it does not, the whole request
             # failed -> ERROR (not "unknown": a 4xx/5xx is a failure).
             try:
-                verdicts = _parse_response(exc.read(), batch)
+                verdicts, details = _parse_response(exc.read(), batch)
             except Exception:
                 verdicts = {flag: UNKNOWN for flag in batch}
+                details = {flag: {"points": None, "msg": None} for flag in batch}
             if all(v == UNKNOWN for v in verdicts.values()):
-                return {flag: ERROR for flag in batch}
-            return verdicts
+                return (
+                    {flag: ERROR for flag in batch},
+                    {flag: {"points": None, "msg": None} for flag in batch},
+                )
+            return verdicts, details
         except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
             self._log(f"SUBMIT transport error: {exc}")
-            return {flag: ERROR for flag in batch}
+            return (
+                {flag: ERROR for flag in batch},
+                {flag: {"points": None, "msg": None} for flag in batch},
+            )
 
     # -- queue helpers ------------------------------------------------------
     def _enqueue(self, flags: list[str], reason: str = "") -> None:

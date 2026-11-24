@@ -80,10 +80,15 @@ def run_round(round_no, targets, challenges, logger, submitter):
 
         verdicts = submitter.submit(found)
         if verdicts:
+            details = getattr(submitter, "last_details", {}) or {}
             for flag, verdict in verdicts.items():
-                logger.line(
+                line = (
                     f"[SUBMIT] {_DISPLAY_VERDICT.get(verdict, verdict)} | {flag}"
                 )
+                points = details.get(flag, {}).get("points")
+                if points is not None:
+                    line += f" | +{points:.2f} pts"
+                logger.line(line)
         else:
             logger.line("[SUBMIT] nothing new to submit")
         queued = submitter.pending_count()
@@ -118,8 +123,9 @@ def main() -> int:
     print("=" * 60, flush=True)
 
     targets = config.load_targets()
-    challenges = [c for c in load_challenges() if c.enabled]
-    disabled = len(load_challenges()) - len(challenges)
+    all_challenges = load_challenges()
+    challenges = [c for c in all_challenges if c.enabled]
+    disabled = len(all_challenges) - len(challenges)
     if not targets:
         Logger.fatal("no targets configured")
         return 1

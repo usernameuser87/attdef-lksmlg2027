@@ -41,7 +41,14 @@ class Challenge:
 
 
 def load_challenges(challenges_dir: Path | None = None) -> list[Challenge]:
-    base = Path(challenges_dir) if challenges_dir else config.CHALLENGES_DIR
+    # Resolve to an absolute path: the runner executes each script with
+    # cwd=challenge.folder, so a relative script path would not resolve.
+    # (A relative ATTDEF_CHALLENGES_DIR used to make every exploit fail
+    # with "No such file or directory", exit 127, and zero flags.)
+    if challenges_dir is not None:
+        base = Path(challenges_dir).resolve()
+    else:
+        base = config.CHALLENGES_DIR
     found: list[Challenge] = []
     if not base.is_dir():
         return found
@@ -62,6 +69,15 @@ def load_challenges(challenges_dir: Path | None = None) -> list[Challenge]:
         except (KeyError, TypeError, ValueError) as exc:
             print(f"[WARN] {folder.name}: missing/invalid name or port ({exc}); skipped")
             continue
+        # A bad timeout must never crash the whole framework at startup
+        # — fall back to the default and warn.
+        try:
+            timeout = float(raw.get("timeout", config.DEFAULT_EXPLOIT_TIMEOUT))
+        except (TypeError, ValueError):
+            print(f"[WARN] {folder.name}: invalid timeout "
+                  f"{raw.get('timeout')!r}; using default "
+                  f"{config.DEFAULT_EXPLOIT_TIMEOUT:g}s")
+            timeout = config.DEFAULT_EXPLOIT_TIMEOUT
         protocol = str(raw.get("protocol", "http")).lower()
         if protocol not in ("http", "https", "tcp"):
             print(f"[WARN] {folder.name}: unknown protocol {protocol!r}; skipped")
@@ -77,7 +93,7 @@ def load_challenges(challenges_dir: Path | None = None) -> list[Challenge]:
                 port=port,
                 protocol=protocol,
                 health_path=str(raw.get("health_path", "")),
-                timeout=float(raw.get("timeout", config.DEFAULT_EXPLOIT_TIMEOUT)),
+                timeout=timeout,
                 script=script,
                 enabled=bool(raw.get("enabled", True)),
                 folder=folder,

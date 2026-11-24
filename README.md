@@ -1,24 +1,118 @@
 # Auto ATTDEF Framework — LKSMLG 2027
 
 Framework otomatisasi Attack-Defense CTF. Python hanya jadi orchestrator,
-**Bash tetap bahasa utama exploit**. Sekali jalan, jalan terus:
+**Bash tetap bahasa utama exploit**. Sekali jalan, jalan terus — satu round
+tiap 180 detik, flag dikirim otomatis ke scoreboard.
+
+## Langkah-langkah penggunaan
+
+### 1. Siapkan mesin
+
+- Python **3.8+** (cek dengan `python3 --version`). Tidak perlu `pip install`
+  apa pun — framework ini hanya pakai stdlib Python.
+- `git` untuk clone repo (atau download ZIP dari GitHub).
+- Mesin ini harus bisa mencapai jaringan kompetisi (IP target `103.145.226.x`
+  dan scoreboard `103.145.226.89:8080`). Kalau mesin kamu pakai proxy,
+  framework sudah diatur untuk koneksi langsung — tidak perlu ubah apa pun.
+
+### 2. Clone repo
 
 ```bash
-python3 main.py
+git clone https://github.com/usernameuser87/attdef-lksmlg2027.git
+cd attdef-lksmlg2027
 ```
 
-## Cara jalan
+### 3. Isi token tim (wajib)
 
 ```bash
-# 1. Salin .env dan isi token tim (wajib)
 cp .env.example .env
-# edit .env -> ATTDEF_TEAM_TOKEN=...
+```
 
-# 2. Jalankan (tidak perlu install apa-apa, stdlib Python saja)
+Buka `.env` dan isi token tim kamu:
+
+```bash
+ATTDEF_TEAM_TOKEN=token-tim-kamu
+```
+
+Token ini dipakai sebagai header `X-Team-Token` di setiap pengiriman flag.
+**Tanpa token, flag TIDAK dikirim** — mereka hanya masuk antrean
+(`data/queue.json`) dan menunggu sampai token diisi. Token tidak pernah
+ditulis ke log dan file `.env` tidak akan ter-commit (sudah ada di
+`.gitignore`).
+
+### 4. (Opsional) Tambah challenge sendiri
+
+Kalau kamu punya exploit Bash untuk service lain, buat folder baru di
+`challenges/` — lihat bagian "Tambah challenge baru" di bawah. Kalau belum
+ada, lewati langkah ini: tiga contoh challenge sudah disertakan
+(`calculator`, `web-flag`, `notes-app`).
+
+### 5. Jalankan
+
+```bash
 python3 main.py
 ```
 
-Berhenti dengan `Ctrl+C`. Framework tidak perlu dijalankan ulang tiap tick.
+Biarkan terminal ini terbuka selama kompetisi. Framework jalan terus
+sampai kamu menghentikannya dengan `Ctrl+C`.
+
+### 6. Baca output di terminal
+
+Setiap round tampilannya seperti ini:
+
+```
+[ROUND 1] START
+[ONLINE] SMKN 5 Malang | Calculator
+[OFFLINE] SMKN 8 Malang | Calculator | SKIPPED
+[EXEC] Calculator | SMKN 5 Malang
+[FLAG] LKS{ABC123...}
+[SUBMIT] Accepted | LKS{ABC123...} | +75.90 pts
+[ROUND 1] FINISHED in 12.4s | flags found: 1 | accepted: 1
+[NEXT ROUND] 180-second schedule | Round 2 at 18:03:00 (in 168s)
+```
+
+Artinya:
+
+| Baris | Arti |
+| --- | --- |
+| `[ROUND n] START` | Round dimulai (tepat di tick 180 detik) |
+| `[ONLINE] ...` | Target + challenge bisa dijangkau, exploit dijalankan |
+| `[OFFLINE] ... \| SKIPPED` | Target/challenge mati, dilewati round ini |
+| `[EXEC] ...` | Script Bash dijalankan untuk pasangan itu |
+| `[FLAG] ...` | Flag ditemukan di stdout exploit |
+| `[SUBMIT] Accepted \| ... \| +75.90 pts` | Scoreboard menerima flag + poinnya |
+| `[SUBMIT] Invalid \| ...` | Scoreboard menolak flag (salah/kedaluwarsa) |
+| `[QUEUE] n flag(s) waiting for retry` | Ada flag yang gagal dikirim, dicoba lagi round berikut |
+| `[ROUND n] FINISHED ...` | Ringkasan round: berapa flag ketemu & diterima |
+| `[NEXT ROUND] ...` | Kapan round berikutnya mulai |
+
+### 7. Cek log & status kapan saja
+
+- `logs/round-001-*.log` — detail lengkap tiap round (stderr, exit code,
+  timeout, error). Satu file per round.
+- `logs/submissions.log` — riwayat setiap percobaan kirim flag beserta
+  verdict-nya (`accepted` / `invalid` / `too_old` / `duplicate` /
+  `error`) dan poin yang didapat.
+- `data/submitted.json` — flag yang sudah punya verdict final (tidak akan
+  dikirim ulang).
+- `data/queue.json` — flag yang gagal dikirim dan menunggu retry.
+
+### 8. Berhenti
+
+Tekan `Ctrl+C` di terminal framework. Untuk jalan lagi, tinggal
+`python3 main.py` — flag yang sudah diterima tidak dikirim ulang, dan
+antrean yang tertunda langsung dicoba lagi di round pertama.
+
+## Kalau ada masalah (troubleshooting)
+
+| Gejala | Penyebab & solusi |
+| --- | --- |
+| `[WARN] ATTDEF_TEAM_TOKEN is empty` saat start | `.env` belum diisi. Isi token, lalu restart framework. Flag yang sudah masuk antrean akan dikirim di round pertama setelah token ada. |
+| Semua target `[OFFLINE]` | Mesin tidak bisa mencapai jaringan kompetisi. Cek koneksi (ping salah satu IP target). Framework tetap jalan dan mencoba lagi tiap round. |
+| `[SUBMIT] Unknown` terus-menerus | Respons scoreboard tidak dikenali — laporkan ke pembuat framework (ini bug parser, bukan salah kamu). Flag tetap aman di antrean. |
+| `[QUEUE] n flag(s) waiting for retry` tidak berkurang | Scoreboard sedang error/timeout. Framework akan retry otomatis tiap round — flag tidak hilang. |
+| Round melebihi 180 detik | Normal kalau exploit lambat. Framework tidak pernah menjalankan dua round bersamaan; slot yang terlewat dilewati dan round berikutnya tetap di grid tick. |
+| `python3 main.py` langsung crash | Cek `config.json` challenge yang baru kamu tambah (JSON tidak valid, `port` bukan angka, atau `script` tidak ada). Framework memberi `[WARN]` dan melewati challenge yang rusak — kalau tetap crash, jalankan `python3 tests/test_units.py` untuk cek. |
 
 ## Scheduler (180 detik, dari START tiap round)
 
@@ -143,6 +237,13 @@ Body: ["LKS{FLAG1}", "LKSMLG2027{FLAG2}"]
 - String kosong dan duplikat tidak pernah dikirim.
 - HTTP 200 **tidak** dianggap "semua diterima" — respons dibaca
   per flag: Accepted / Invalid / Too old / Duplicate / Error.
+  Format respons scoreboard yang sebenarnya (sudah diverifikasi live):
+  `[{"flag": "...", "msg": "[...] Flag accepted! Earned 75.90 flag points!"}]`
+  — verdict dibaca dari teks `msg`, dan poin yang didapat ditampilkan di
+  console (`[SUBMIT] Accepted | LKS{...} | +75.90 pts`) dan di
+  `logs/submissions.log`.
+- Koneksi ke scoreboard **langsung, tanpa proxy** — mesin dengan proxy
+  terkonfigurasi pun tetap bisa submit (lihat `core/net.py`).
 - Flag yang sudah punya verdict final (accepted/invalid/too_old/
   duplicate) dicatat di `data/submitted.json` dan tidak dikirim lagi.
 - Kalau submission gagal (server error, timeout, tidak ada jaringan),
@@ -158,7 +259,7 @@ Body: ["LKS{FLAG1}", "LKSMLG2027{FLAG2}"]
 [OFFLINE] SMKN 8 Malang | Calculator | SKIPPED
 [EXEC] Calculator | SMKN 5 Malang
 [FLAG] LKS{...}
-[SUBMIT] Accepted | LKS{...}
+[SUBMIT] Accepted | LKS{...} | +75.90 pts
 [ROUND 1] FINISHED in 12.4s | flags found: 1 | accepted: 1
 [NEXT ROUND] 180-second schedule | Round 2 at 18:03:00 (in 168s)
 ```
@@ -181,6 +282,7 @@ core/
   submitter.py           # PUT /flags + dedupe + antrean aman
   scheduler.py           # tick 180s dari START, monotonic, skip overrun
   logger.py              # console ringkas + log per round
+  net.py                 # koneksi HTTP langsung, tanpa proxy
 challenges/              # contoh: calculator, web-flag, notes-app
 logs/
   round-001-*.log        # satu file per round, detail lengkap
@@ -197,7 +299,7 @@ Satu soal tes lengkap disertakan: mock service rentan + mock scoreboard
 di localhost, jadi tidak menyentuh infrastruktur kompetisi.
 
 ```bash
-python3 tests/test_units.py       # parser + scheduler (31 checks)
+python3 tests/test_units.py       # parser + scheduler + submitter + net + runner + loader (48 checks)
 python3 tests/test_framework.py   # end-to-end (29 checks)
 ```
 
@@ -216,7 +318,42 @@ Yang diverifikasi `test_framework.py`:
   tepat di grid (10.00 detik setelah round 1), tidak ada round yang
   tumpang tindih, dan flag dari challenge lambat itu tetap terkirim.
 
-Hasil terakhir: **31/31 unit tests PASS, 29/29 end-to-end PASS.**
+Hasil terakhir: **48/48 unit tests PASS, 29/29 end-to-end PASS.**
+
+## Bug yang ditemukan & diperbaiki (2026-11-24)
+
+Bug hunt setelah tes submit manual melawan scoreboard asli:
+
+1. **Parser submit tidak membaca format asli scoreboard (kritis).**
+   Scoreboard mengembalikan `[{"flag": ..., "msg": "..."}]` — tidak ada
+   field `status`. Parser lama hanya membaca `status`, jadi semua flag
+   kembali `Unknown` dan terjebak di antrean selamanya, tidak pernah
+   tercatat diterima/ditolak. Sekarang verdict dibaca dari teks `msg`
+   (`Flag accepted!` / `Flag is invalid or too old.`) dan poin
+   (`Earned 75.90 flag points!`) diekstrak dan ditampilkan.
+2. **Koneksi lewat proxy (kritis).** `urllib` mengikuti env var
+   `http_proxy`/`https_proxy`, jadi di mesin yang proxy-nya terkonfigurasi
+   semua health check dan submission gagal (dialihkan ke proxy). Sekarang
+   semua koneksi HTTP memakai opener tanpa proxy (`core/net.py`).
+3. **Path challenge relatif membuat semua exploit gagal (kritis).**
+   Kalau `ATTDEF_CHALLENGES_DIR` diisi path relatif, runner menjalankan
+   script dengan `cwd` = folder challenge, sehingga path script tidak
+   ketemu (`No such file or directory`, exit 127) dan tidak ada flag
+   yang ditemukan sama sekali. Sekarang semua path di-resolve ke absolut
+   (`config.py` + `core/loader.py`).
+4. **Timeout exploit di Python 3.8–3.10.** `TimeoutExpired` di versi itu
+   tidak punya atribut `.stdout` (hanya `.output`) — handler timeout
+   akan crash dan flag yang sudah tercetak hilang. Sekarang dibaca
+   dengan fallback yang aman di semua versi.
+5. **Satu `config.json` rusak mematikan seluruh framework.** Nilai
+   `timeout` yang tidak valid (mis. `"abc"` atau `null`) membuat
+   `load_challenges()` crash saat startup. Sekarang fallback ke default
+   dengan peringatan.
+6. **`load_challenges()` dipanggil dua kali** di `main.py` (peringatan
+   tercetak ganda). Sekarang sekali saja.
+7. **Nilai env yang buruk membuat crash saat startup.** `ATTDEF_TICK=0`
+   atau worker `0` membuat `Scheduler`/`ThreadPoolExecutor` melempar
+   `ValueError` tanpa penanganan. Sekarang dikembalikan ke default.
 
 ## Catatan
 

@@ -7,6 +7,14 @@ Binds 127.0.0.1 only. Mimics PUT /flags:
   * Body: JSON array of flags.
   * Response: {"accepted": [...], "invalid": [...],
                 "too_old": [...], "duplicate": [...]}
+    With MOCK_MSG_FORMAT=1 the response instead matches the REAL
+    scoreboard format (verified live 2026-11-24):
+    [{"flag": "...",
+      "msg": "[...] Flag accepted! Earned 75.5 flag points!"},
+     {"flag": "...",
+      "msg": "[...] Flag is invalid or too old."}]
+    The received log still records the dict verdicts, so the e2e
+    test's assertions work in either mode.
   * A flag containing "OLD" is "too_old"; a malformed flag is
     "invalid"; a flag already accepted is "duplicate".
   * With MOCK_FAIL_FIRST=1 the FIRST request returns HTTP 500 without
@@ -27,6 +35,8 @@ PORT = int(os.environ.get("MOCK_SUBMIT_PORT", "18081"))
 TOKEN = os.environ.get("MOCK_SUBMIT_TOKEN", "TEST_TOKEN")
 RECEIVED_LOG = os.environ.get("MOCK_RECEIVED_LOG", "tests/data/received.jsonl")
 FAIL_FIRST = os.environ.get("MOCK_FAIL_FIRST", "0") == "1"
+# 1 = answer with the real scoreboard's [{"flag","msg"}] shape.
+MSG_FORMAT = os.environ.get("MOCK_MSG_FORMAT", "0") == "1"
 
 _FLAG_RE = re.compile(r"LKSMLG2027\{[^}\s<>]+\}|LKS\{[^}\s<>]+\}")
 
@@ -79,6 +89,21 @@ class Handler(BaseHTTPRequestHandler):
                     _seen.add(flag)
                     result["accepted"].append(flag)
         _log({"ts": time.time(), "status": 200, "flags": flags, "result": result})
+        if MSG_FORMAT:
+            # Real scoreboard shape: one {"flag","msg"} per flag.
+            items = []
+            for flag in flags:
+                if flag in result["accepted"]:
+                    items.append({"flag": flag,
+                                  "msg": f"[{flag}] Flag accepted! "
+                                         f"Earned 75.5 flag points!"})
+                elif flag in result["duplicate"]:
+                    items.append({"flag": flag,
+                                  "msg": f"[{flag}] Flag already submitted."})
+                else:
+                    items.append({"flag": flag,
+                                  "msg": f"[{flag}] Flag is invalid or too old."})
+            return self._send(200, items)
         return self._send(200, result)
 
     def _send(self, code, payload):

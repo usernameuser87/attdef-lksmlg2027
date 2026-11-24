@@ -20,6 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import config
 from core.loader import Challenge
+from core.net import direct_opener
 
 
 def check_one(ip: str, challenge: Challenge, timeout: float | None = None) -> bool:
@@ -29,7 +30,8 @@ def check_one(ip: str, challenge: Challenge, timeout: float | None = None) -> bo
         url = f"{challenge.protocol}://{ip}:{challenge.port}{path}"
         req = urllib.request.Request(url, method="GET")
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            # Direct connection — never through a proxy (see core/net.py).
+            with direct_opener().open(req, timeout=timeout) as resp:
                 return resp.status < 500
         except urllib.error.HTTPError as exc:
             # Any HTTP response means the service is alive.

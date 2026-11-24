@@ -53,11 +53,20 @@ def run_one(target: dict, challenge: Challenge) -> ExecResult:
     except subprocess.TimeoutExpired as exc:
         # Keep partial output: a slow exploit may have printed the flag
         # before the timeout hit.
+        # TimeoutExpired carries partial stdout as .stdout on Python
+        # 3.11+ and as .output on 3.8-3.10 — read whichever exists.
+        def _partial(value):
+            if value is None:
+                return ""
+            if isinstance(value, (bytes, bytearray)):
+                return value.decode("utf-8", "replace")
+            return str(value)
+
         result.timed_out = True
-        result.stdout = (exc.stdout or b"").decode("utf-8", "replace") \
-            if isinstance(exc.stdout, (bytes, bytearray)) else (exc.stdout or "")
-        result.stderr = (exc.stderr or b"").decode("utf-8", "replace") \
-            if isinstance(exc.stderr, (bytes, bytearray)) else (exc.stderr or "")
+        result.stdout = _partial(
+            getattr(exc, "stdout", None) or getattr(exc, "output", None)
+        )
+        result.stderr = _partial(getattr(exc, "stderr", None))
         result.returncode = None
     except OSError as exc:
         result.error = str(exc)

@@ -282,6 +282,9 @@ def main():
         "MOCK_SUBMIT_TOKEN": "TEST_TOKEN",
         "MOCK_RECEIVED_LOG": str(DATA / "received.jsonl"),
         "MOCK_FAIL_FIRST": "1",
+        # Answer with the REAL scoreboard's [{"flag","msg"}] shape, so
+        # the e2e run proves the framework parses the live API.
+        "MOCK_MSG_FORMAT": "1",
         "PYTHONUNBUFFERED": "1",
     })
     vuln = subprocess.Popen(

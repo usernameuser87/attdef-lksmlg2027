@@ -98,7 +98,11 @@ def load_targets():
 # Scheduler
 # ---------------------------------------------------------------------------
 # Interval between round START times, in seconds. 180 = competition tick.
+# A bad value (0, negative, non-numeric) falls back to 180 instead of
+# crashing the framework at startup.
 TICK_SECONDS = _env_float("ATTDEF_TICK", 180)
+if TICK_SECONDS <= 0:
+    TICK_SECONDS = 180
 # 0 = run forever. > 0 = stop after that many executed rounds (testing).
 MAX_ROUNDS = _env_int("ATTDEF_MAX_ROUNDS", 0)
 
@@ -110,7 +114,9 @@ SUBMIT_URL = os.environ.get(
 )
 TEAM_TOKEN = os.environ.get("ATTDEF_TEAM_TOKEN", "")
 SUBMIT_TIMEOUT = _env_float("ATTDEF_SUBMIT_TIMEOUT", 15)
-# Max times a queued flag is retried before it is moved to the dead queue.
+# How many times a queued flag is retried before a warning is logged.
+# Flags are NEVER dropped for exceeding this — they stay queued and
+# keep being retried, because a lost flag is worse than a late one.
 SUBMIT_MAX_RETRIES = _env_int("ATTDEF_SUBMIT_MAX_RETRIES", 10)
 
 # ---------------------------------------------------------------------------
@@ -118,14 +124,22 @@ SUBMIT_MAX_RETRIES = _env_int("ATTDEF_SUBMIT_MAX_RETRIES", 10)
 # ---------------------------------------------------------------------------
 CHALLENGES_DIR = Path(
     os.environ.get("ATTDEF_CHALLENGES_DIR", str(BASE_DIR / "challenges"))
-)
+).resolve()
+# .resolve() matters: a relative ATTDEF_CHALLENGES_DIR would make every
+# exploit fail ("No such file or directory", exit 127) because the
+# runner executes scripts with cwd=challenge.folder.
 # Default per-exploit timeout (seconds) when a challenge has no timeout.
 DEFAULT_EXPLOIT_TIMEOUT = _env_float("ATTDEF_EXPLOIT_TIMEOUT", 30)
 # Default health-check timeout (seconds).
 DEFAULT_HEALTH_TIMEOUT = _env_float("ATTDEF_HEALTH_TIMEOUT", 3)
-# Parallel workers for health checks and exploit runs.
+# Parallel workers for health checks and exploit runs. A bad value
+# (0, negative) would crash ThreadPoolExecutor — clamp to the default.
 SCAN_WORKERS = _env_int("ATTDEF_SCAN_WORKERS", 20)
+if SCAN_WORKERS < 1:
+    SCAN_WORKERS = 20
 EXEC_WORKERS = _env_int("ATTDEF_EXEC_WORKERS", 20)
+if EXEC_WORKERS < 1:
+    EXEC_WORKERS = 20
 
 # ---------------------------------------------------------------------------
 # Paths
