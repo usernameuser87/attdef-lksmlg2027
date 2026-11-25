@@ -24,12 +24,29 @@ def _load_dotenv(path: Path) -> None:
     """Minimal .env loader (stdlib only). Never overwrites real env vars."""
     if not path.exists():
         return
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, ValueError) as exc:
+        # A .env that is a directory, unreadable, or not valid UTF-8
+        # used to crash the whole framework at import time (config is
+        # imported first, before any try/except exists). Ignore it
+        # with a warning instead — the defaults still work.
+        print(f"[WARN] cannot read .env {path} ({exc}); ignoring it")
+        return
+    for raw in lines:
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
         key, value = key.strip(), value.strip()
+        # Allow the common `export KEY=value` form in .env files.
+        # Without this, `export ATTDEF_TEAM_TOKEN=...` silently sets
+        # a variable literally named "export ATTDEF_TEAM_TOKEN" and
+        # the token stays empty, so every flag is only queued.
+        if key.startswith("export ") or key.startswith("export\t"):
+            key = key[7:].strip()
+        if not key:
+            continue
         # Strip surrounding quotes, if any.
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
             value = value[1:-1]

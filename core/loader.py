@@ -25,6 +25,25 @@ from pathlib import Path
 import config
 
 
+def _as_bool(value, default: bool = True) -> bool:
+    """Parse an "enabled" value. A bare bool("false") is True in
+    Python, so a config.json with "enabled": "false" used to ENABLE
+    the challenge — the exact opposite of what the user asked.
+    Strings are parsed case-insensitively; anything unrecognised
+    falls back to the default."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("true", "1", "yes", "on"):
+            return True
+        if text in ("false", "0", "no", "off"):
+            return False
+    return default
+
+
 @dataclass
 class Challenge:
     name: str
@@ -102,8 +121,9 @@ def load_challenges(challenges_dir: Path | None = None) -> list[Challenge]:
             health_path = "/" + health_path
         script_name = str(raw.get("script", "exploit.sh"))
         script = folder / script_name
-        if not script.exists():
-            print(f"[WARN] {folder.name}: script {script_name!r} not found; skipped")
+        if not script.is_file():
+            print(f"[WARN] {folder.name}: script {script_name!r} not found "
+                  f"or not a file; skipped")
             continue
         found.append(
             Challenge(
@@ -113,7 +133,7 @@ def load_challenges(challenges_dir: Path | None = None) -> list[Challenge]:
                 health_path=health_path,
                 timeout=timeout,
                 script=script,
-                enabled=bool(raw.get("enabled", True)),
+                enabled=_as_bool(raw.get("enabled", True)),
                 folder=folder,
             )
         )

@@ -631,6 +631,87 @@ try:
 except Exception:
     check("unwritable state file -> submit returns, no raise", False, True)
 
+# ---------------------------------------------------------------------------
+# Loader: "enabled" as a string must be parsed, not bool()'d.
+# bool("false") is True in Python, so a config.json with
+# "enabled": "false" used to ENABLE the challenge.
+# ---------------------------------------------------------------------------
+print("[loader: enabled as string]")
+_enabled_dir = Path(_tempfile.mkdtemp())
+for _slug, _enabled in (("strfalse", "false"), ("str0", "0"), ("strno", "no"),
+                        ("strtrue", "true"), ("str1", "1"),
+                        ("boolfalse", False), ("booltrue", True),
+                        ("upperfalse", "FALSE"), ("mixed", "Off")):
+    (_enabled_dir / _slug).mkdir()
+    (_enabled_dir / _slug / "config.json").write_text(
+        json.dumps({"name": _slug, "port": 8081, "protocol": "http",
+                    "timeout": 30, "script": "exploit.sh",
+                    "enabled": _enabled}), encoding="utf-8")
+    (_enabled_dir / _slug / "exploit.sh").write_text("true\n", encoding="utf-8")
+_enabled = {c.slug: c.enabled for c in _load_challenges(_enabled_dir)}
+check("\"false\"/\"0\"/\"no\"/\"FALSE\"/\"Off\" disable the challenge",
+      all(_enabled[s] is False for s in
+          ("strfalse", "str0", "strno", "upperfalse", "mixed")), True)
+check("\"true\"/\"1\" enable the challenge",
+      all(_enabled[s] is True for s in ("strtrue", "str1", "booltrue")), True)
+check("bool false still disables", _enabled["boolfalse"], False)
+
+# ---------------------------------------------------------------------------
+# Loader: the script must be a FILE, not just something that exists.
+# A directory named exploit.sh used to load fine and then fail every
+# round with exit 126 (bash: "is a directory"), zero flags.
+# ---------------------------------------------------------------------------
+print("[loader: script must be a file]")
+_dirscript_dir = Path(_tempfile.mkdtemp())
+(_dirscript_dir / "dirscript").mkdir()
+(_dirscript_dir / "dirscript" / "config.json").write_text(
+    json.dumps({"name": "ds", "port": 8081, "protocol": "http",
+                "timeout": 5, "script": "exploit.sh"}), encoding="utf-8")
+(_dirscript_dir / "dirscript" / "exploit.sh").mkdir()
+check("script as a directory is skipped",
+      _load_challenges(_dirscript_dir), [])
+
+# ---------------------------------------------------------------------------
+# Config: .env with `export KEY=value` lines, and a .env that cannot be
+# read at all, must both work. The first silently left the token empty
+# (flags only queued); the second crashed the framework at import.
+# ---------------------------------------------------------------------------
+print("[config: .env export prefix and unreadable .env]")
+import shutil as _shutil2
+_env_dir = Path(_tempfile.mkdtemp())
+_shutil2.copy(Path(__file__).resolve().parent.parent / "config.py",
+              _env_dir / "config.py")
+(_env_dir / ".env").write_text(
+    "export ATTDEF_TEAM_TOKEN=tok123\nexport ATTDEF_TICK=42\n",
+    encoding="utf-8")
+_out = _sp.run(
+    [sys.executable, "-c",
+     "import config; print(config.TEAM_TOKEN, config.TICK_SECONDS)"],
+    capture_output=True, text=True, cwd=str(_env_dir),
+)
+check("export-style .env sets the token and tick",
+      _out.stdout.strip() == "tok123 42.0", True)
+_bad_env_dir = Path(_tempfile.mkdtemp())
+_shutil2.copy(Path(__file__).resolve().parent.parent / "config.py",
+              _bad_env_dir / "config.py")
+(_bad_env_dir / ".env").mkdir()  # .env is a directory
+_out = _sp.run(
+    [sys.executable, "-c", "import config; print('imported ok')"],
+    capture_output=True, text=True, cwd=str(_bad_env_dir),
+)
+check(".env as a directory does not crash import",
+      _out.returncode == 0 and "imported ok" in _out.stdout, True)
+_bad_utf_dir = Path(_tempfile.mkdtemp())
+_shutil2.copy(Path(__file__).resolve().parent.parent / "config.py",
+              _bad_utf_dir / "config.py")
+(_bad_utf_dir / ".env").write_bytes(b"ATTDEF_TICK=\xff\xfe\n")
+_out = _sp.run(
+    [sys.executable, "-c", "import config; print('imported ok')"],
+    capture_output=True, text=True, cwd=str(_bad_utf_dir),
+)
+check(".env with bad UTF-8 does not crash import",
+      _out.returncode == 0 and "imported ok" in _out.stdout, True)
+
 print()
 if FAILURES:
     print(f"FAILED: {len(FAILURES)} check(s): {FAILURES}")

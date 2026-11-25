@@ -308,7 +308,7 @@ Satu soal tes lengkap disertakan: mock service rentan + mock scoreboard
 di localhost, jadi tidak menyentuh infrastruktur kompetisi.
 
 ```bash
-python3 tests/test_units.py       # parser + scheduler + submitter + net + runner + loader + scanner + logger + config (73 checks)
+python3 tests/test_units.py       # parser + scheduler + submitter + net + runner + loader + scanner + logger + config (80 checks)
 python3 tests/test_framework.py   # end-to-end (29 checks)
 ```
 
@@ -327,7 +327,7 @@ Yang diverifikasi `test_framework.py`:
   tepat di grid (10.00 detik setelah round 1), tidak ada round yang
   tumpang tindih, dan flag dari challenge lambat itu tetap terkirim.
 
-Hasil terakhir: **73/73 unit tests PASS, 29/29 end-to-end PASS.**
+Hasil terakhir: **80/80 unit tests PASS, 29/29 end-to-end PASS.**
 
 ## Bug yang ditemukan & diperbaiki (2026-11-24)
 
@@ -487,6 +487,38 @@ Tes baru untuk putaran 3 ada di `tests/test_units.py` (config env
 non-finite, scheduler tick non-finite, loader timeout negatif/nol/
 non-finite, logger dir rusak, submitter URL rusak, submitter state
 rusak — 9 checks) — total unit jadi 73/73.
+
+## Bug hunt putaran 4 (2026-11-25)
+
+22. **`"enabled": "false"` di `config.json` malah MENGAKTIFKAN challenge.**
+    `bool("false")` itu `True` di Python, jadi siapa pun yang menulis
+    `"enabled": "false"` (atau `"0"`, `"no"`) mendapat kebalikan dari
+    yang diminta — challenge yang diniatkan mati malah jalan dan
+    mengirim flag. Sekarang loader memakai `_as_bool()`: string
+    `"true"/"1"/"yes"/"on"` dan `"false"/"0"/"no"/"off"` diparse
+    case-insensitive, bool dan angka tetap seperti biasa.
+23. **`.env` dengan `export KEY=value` diam-diam tidak berfungsi.**
+    Loader lama menyimpan variabel dengan nama harfiah
+    `"export ATTDEF_TEAM_TOKEN"`, jadi token tetap kosong dan semua
+    flag cuma masuk antrean (hanya ada `[WARN]` sekali di startup).
+    Sekarang awalan `export ` / `export<TAB>` dihapus dulu sebelum
+    key dipakai.
+24. **`.env` yang tidak bisa dibaca membuat framework crash saat import.**
+    Kalau `.env` ternyata sebuah folder, `read_text()` melempar
+    `IsADirectoryError`; kalau isinya bukan UTF-8 valid, melempar
+    `UnicodeDecodeError` — keduanya terjadi di `import config`,
+    sebelum `try/except` apa pun ada, jadi framework tidak bisa start
+    sama sekali. Sekarang `_load_dotenv()` menangkap `OSError` /
+    `ValueError`, memberi peringatan, dan lanjut dengan default.
+25. **`script` yang isinya folder lolos loader.** `exists()` bernilai
+    `True` untuk folder, jadi `exploit.sh` yang ternyata direktori
+    dimuat sebagai challenge lalu gagal tiap round dengan exit 126
+    (`bash: ... is a directory`), nol flag, tanpa peringatan yang
+    jelas. Sekarang loader memakai `is_file()`.
+
+Tes baru untuk putaran 4 ada di `tests/test_units.py` (loader enabled
+string, loader script harus file, config .env export + .env rusak —
+7 checks) — total unit jadi 80/80.
 
 ## Catatan
 
