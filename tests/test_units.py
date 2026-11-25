@@ -464,6 +464,46 @@ else:
     check("https dead port -> OFFLINE",
           _check_one("127.0.0.1", _https_challenge(_port)), False)
 
+# --- runner: $IP/$PORT env vars (regression for the 2026-11-25 report) ---
+# A script that uses $IP/$PORT directly (no $1/$2 assignment) used to
+# get empty values and curl failed with "URL rejected: No host part in
+# the URL" (exit 3, "malformed"). The runner now exports IP/PORT as
+# env vars too, so both conventions work.
+print("[runner: $IP/$PORT env vars]")
+import threading as _threading2
+from http.server import BaseHTTPRequestHandler as _BH, HTTPServer as _HS
+from core.loader import Challenge as _Challenge
+from core.runner import run_one as _run_one
+
+class _FlagHandler(_BH):
+    def do_GET(self):
+        body = b"<html><body>LKS{TEST00_ENVIP01}</body></html>"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *args):
+        pass
+
+_srv2 = _HS(("127.0.0.1", 0), _FlagHandler)
+_port2 = _srv2.server_address[1]
+_threading2.Thread(target=_srv2.serve_forever, daemon=True).start()
+_chdir = Path(tempfile.mkdtemp())
+(_chdir / "exploit.sh").write_text(
+    "#!/bin/bash\nset -u\n"
+    "curl -s --max-time 5 \"http://$IP:$PORT/x\"\n",
+    encoding="utf-8",
+)
+_chal = _Challenge(name="env-ip", port=_port2, protocol="http",
+                   health_path="/", timeout=10.0,
+                   script=_chdir / "exploit.sh", enabled=True, folder=_chdir)
+_res = _run_one({"name": "t", "ip": "127.0.0.1"}, _chal)
+check("script using $IP/$PORT (no $1/$2) gets the flag",
+      extract_flags(_res.stdout), ["LKS{TEST00_ENVIP01}"])
+check("script using $IP/$PORT exits 0", _res.returncode, 0)
+_srv2.shutdown()
+
 print()
 if FAILURES:
     print(f"FAILED: {len(FAILURES)} check(s): {FAILURES}")

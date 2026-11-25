@@ -193,6 +193,15 @@ Framework menjalankan:
 bash exploit.sh <IP> <PORT>     # $1 = IP target, $2 = port
 ```
 
+IP dan port tersedia dengan DUA cara — pakai yang mana saja:
+
+- sebagai argumen: `IP="$1"; PORT="$2"`
+- sebagai environment variable: `$IP` dan `$PORT` (sudah di-export
+  framework ke proses exploit, sejak perbaikan bug 16)
+
+Dua-duanya membawa nilai yang sama. Contoh lama yang pakai `$1`/`$2`
+tetap jalan tanpa diubah.
+
 - Tulis exploit seperti biasa (`curl`, `grep`, `sed`, `awk`, dll).
   Source-nya **tidak diubah** dan tidak dipindah ke Python.
 - stdout dan stderr ditangkap **terpisah**. Flag dibaca dari stdout.
@@ -299,7 +308,7 @@ Satu soal tes lengkap disertakan: mock service rentan + mock scoreboard
 di localhost, jadi tidak menyentuh infrastruktur kompetisi.
 
 ```bash
-python3 tests/test_units.py       # parser + scheduler + submitter + net + runner + loader + scanner (63 checks)
+python3 tests/test_units.py       # parser + scheduler + submitter + net + runner + loader + scanner (65 checks)
 python3 tests/test_framework.py   # end-to-end (29 checks)
 ```
 
@@ -318,7 +327,7 @@ Yang diverifikasi `test_framework.py`:
   tepat di grid (10.00 detik setelah round 1), tidak ada round yang
   tumpang tindih, dan flag dari challenge lambat itu tetap terkirim.
 
-Hasil terakhir: **63/63 unit tests PASS, 29/29 end-to-end PASS.**
+Hasil terakhir: **65/65 unit tests PASS, 29/29 end-to-end PASS.**
 
 ## Bug yang ditemukan & diperbaiki (2026-11-24)
 
@@ -408,9 +417,23 @@ Bug hunt setelah tes submit manual melawan scoreboard asli:
     docstring menjanjikan fungsi ini tidak pernah raise. Sekarang
     pembuatan file log ada di dalam `try`.
 
+16. **Exploit yang pakai `$IP`/`$PORT` langsung selalu "malformed"
+    (2026-11-25).** Runner hanya melempar IP/port sebagai argumen
+    `$1`/`$2` — bukan sebagai env var. Script yang menulis
+    `curl "http://$IP:$PORT/..."` tanpa `IP="$1"; PORT="$2"` dulu
+    mendapat nilai kosong, jadi curl gagal dengan
+    `curl: (3) URL rejected: No host part in the URL` (exit 3).
+    Kalau script pakai `set -u`, gagalnya bahkan lebih awal:
+    `IP: unbound variable`. Sekarang runner juga mengekspor
+    `IP` dan `PORT` sebagai environment variable ke proses exploit,
+    jadi kedua gaya (`$1`/`$2` maupun `$IP`/`$PORT`) jalan. Tes
+    regresi di `tests/test_units.py` (`[runner: $IP/$PORT env vars]`,
+    2 checks) — total unit jadi 65/65.
+
 Tes baru untuk putaran 2 ada di `tests/test_units.py` (submitter state
 loading + https self-signed + health_path + corrupt submitted.json +
-empty env dirs + parser persentase, 15 checks) — total unit jadi 63/63.
+empty env dirs + parser persentase, 15 checks) — total unit jadi 63/63
+sebelum bug 16, 65/65 sesudahnya.
 
 ## Catatan
 

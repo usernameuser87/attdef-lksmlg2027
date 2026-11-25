@@ -2,6 +2,11 @@
 """
 Rules, exactly as specified:
   * Run as:  bash script.sh <IP> <PORT>   (IP = $1, PORT = $2)
+  * IP and PORT are ALSO exported as environment variables, so a
+    script may use either "$1"/"$2" or "$IP"/"$PORT". (Before this,
+    scripts that used $IP/$PORT without assigning them first got empty
+    values and curl failed with "URL rejected: No host part in the
+    URL" — exit code 3. That was the 2026-11-25 "malformed" report.)
   * The script is used as-is. No source changes, no format assumptions.
   * stdout and stderr are captured SEPARATELY.
   * A nonzero exit code does NOT mean "no flag" — flags are parsed from
@@ -13,6 +18,7 @@ Rules, exactly as specified:
     logged by the caller afterwards.
 """
 
+import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -38,6 +44,10 @@ def run_one(target: dict, challenge: Challenge) -> ExecResult:
         target_name=target["name"], target_ip=target["ip"], challenge=challenge
     )
     cmd = ["bash", str(challenge.script), target["ip"], str(challenge.port)]
+    # IP/PORT as env vars too (see module docstring): a script may use
+    # $IP/$PORT directly, or $1/$2. Both carry the same values.
+    env = {**os.environ,
+           "IP": target["ip"], "PORT": str(challenge.port)}
     try:
         proc = subprocess.run(
             cmd,
@@ -46,6 +56,7 @@ def run_one(target: dict, challenge: Challenge) -> ExecResult:
             errors="replace",
             timeout=challenge.timeout,
             cwd=str(challenge.folder),
+            env=env,
         )
         result.stdout = proc.stdout or ""
         result.stderr = proc.stderr or ""
