@@ -217,8 +217,20 @@ _bad_dir = Path(_tempfile.mkdtemp())
     encoding="utf-8")
 (_bad_dir / "nulltimeout" / "exploit.sh").write_text("true\n",
                                                      encoding="utf-8")
+# Non-positive / non-finite timeouts are just as bad as non-numeric
+# ones: -5 kills every exploit instantly (TimeoutExpired at once),
+# 0 does the same, and nan makes subprocess.run raise ValueError,
+# which poisons the whole round. All must fall back to the default.
+for _slug, _bad_timeout in (("neg", -5), ("zero", 0),
+                            ("nan", "nan"), ("inf", "inf")):
+    (_bad_dir / _slug).mkdir()
+    (_bad_dir / _slug / "config.json").write_text(
+        json.dumps({"name": _slug, "port": 8083, "protocol": "http",
+                    "timeout": _bad_timeout, "script": "exploit.sh"}),
+        encoding="utf-8")
+    (_bad_dir / _slug / "exploit.sh").write_text("true\n", encoding="utf-8")
 _loaded = _load_challenges(_bad_dir)
-check("both bad-timeout challenges still load", len(_loaded), 2)
+check("all bad-timeout challenges still load", len(_loaded), 6)
 check("bad timeout -> default",
       all(c.timeout == 30 for c in _loaded), True)
 
@@ -325,6 +337,31 @@ check("empty LOGS_DIR -> default logs dir",
 check("empty DATA_DIR -> default data dir",
       _lines[1].endswith("/data") if len(_lines) > 1 else False, True)
 
+# Non-finite / non-positive env values must fall back too: TICK=nan
+# used to crash the scheduler after round 1 (math.ceil(nan)),
+# TICK=inf crashed main() at timedelta(seconds=inf), and a negative
+# timeout made every exploit/submission fail silently.
+print("[config: non-finite / non-positive env values fall back]")
+_out = _sp.run(
+    [sys.executable, "-c",
+     "import os; os.environ['ATTDEF_TICK']='nan'; "
+     "os.environ['ATTDEF_SUBMIT_TIMEOUT']='-5'; "
+     "os.environ['ATTDEF_HEALTH_TIMEOUT']='0'; "
+     "os.environ['ATTDEF_EXPLOIT_TIMEOUT']='inf'; "
+     "import config; print(config.TICK_SECONDS, config.SUBMIT_TIMEOUT, "
+     "config.DEFAULT_HEALTH_TIMEOUT, config.DEFAULT_EXPLOIT_TIMEOUT)"],
+    capture_output=True, text=True, cwd=str(Path(__file__).resolve().parent.parent),
+)
+check("nan/inf/negative/zero env -> defaults 180 15 3 30",
+      _out.stdout.strip().split() == ["180", "15", "3", "30"], True)
+_out = _sp.run(
+    [sys.executable, "-c",
+     "import os; os.environ['ATTDEF_TICK']='inf'; "
+     "import config; print(config.TICK_SECONDS)"],
+    capture_output=True, text=True, cwd=str(Path(__file__).resolve().parent.parent),
+)
+check("ATTDEF_TICK=inf -> 180", _out.stdout.strip(), "180")
+
 # ---------------------------------------------------------------------------
 # Scheduler (pure function)
 # ---------------------------------------------------------------------------
@@ -339,6 +376,26 @@ check("overrun 190s, tick 180 -> index 2",
       next_round_index(1000.0, 1190.0, 180.0), 2)
 check("tick 180, exactly 180s later -> 1",
       next_round_index(0.0, 180.0, 180.0), 1)
+
+
+def _raises_value_error(fn):
+    try:
+        fn()
+    except ValueError:
+        return True
+    return False
+
+
+# A non-finite tick must fail fast at construction, with a clear
+# message — not crash mysteriously after round 1 (nan: math.ceil
+# raises; inf: timedelta(seconds=inf) raises in main()).
+check("Scheduler(nan) raises ValueError",
+      _raises_value_error(lambda: Scheduler(float("nan"))), True)
+check("Scheduler(inf) raises ValueError",
+      _raises_value_error(lambda: Scheduler(float("inf"))), True)
+check("next_round_index with nan tick raises ValueError",
+      _raises_value_error(lambda: next_round_index(0.0, 10.0, float("nan"))),
+      True)
 
 # ---------------------------------------------------------------------------
 # Scheduler class with a fake clock (no real sleeping)
@@ -503,6 +560,76 @@ check("script using $IP/$PORT (no $1/$2) gets the flag",
       extract_flags(_res.stdout), ["LKS{TEST00_ENVIP01}"])
 check("script using $IP/$PORT exits 0", _res.returncode, 0)
 _srv2.shutdown()
+
+# ---------------------------------------------------------------------------
+# Logger: an unusable logs dir must never raise, and must never kill a
+# round. Logging is a side channel; the rounds are the work.
+# ---------------------------------------------------------------------------
+print("[logger: unusable logs dir never raises]")
+from core.logger import Logger as _Logger
+import shutil as _shutil
+
+_bad_log_file = Path(_tempfile.mktemp())
+_bad_log_file.write_text("not a directory")
+try:
+    _lg = _Logger(logs_dir=_bad_log_file)
+    _lg.open_round(1)
+    _lg.line("[TEST] console still works")
+    _lg.close_round(1)
+    check("Logger(logs_dir=<existing file>) never raises", True, True)
+except Exception:
+    check("Logger(logs_dir=<existing file>) never raises", False, True)
+# A logs dir deleted after startup is recreated by open_round.
+_good_log_dir = Path(_tempfile.mkdtemp()) / "logs"
+_lg2 = _Logger(logs_dir=_good_log_dir)
+_shutil.rmtree(_good_log_dir)
+_lg2.open_round(1)
+_lg2.line("[TEST] round runs after dir deleted")
+_lg2.close_round(1)
+check("open_round recreates a deleted logs dir",
+      _good_log_dir.is_dir()
+      and len(list(_good_log_dir.glob("round-*.log"))) == 1, True)
+
+# ---------------------------------------------------------------------------
+# Submitter: a malformed SUBMIT_URL must be a transport error (flags
+# stay queued), never an exception that fails the round and loses flags.
+# ---------------------------------------------------------------------------
+print("[submitter: malformed SUBMIT_URL never raises]")
+import config as _config2
+from core.submitter import Submitter as _Submitter
+
+_tmp2 = Path(_tempfile.mkdtemp())
+_config2.SUBMITTED_FILE = _tmp2 / "s.json"
+_config2.QUEUE_FILE = _tmp2 / "q.json"
+_config2.TEAM_TOKEN = "TEST_TOKEN"
+_malformed_ok = True
+for _bad_url in ("notaurl", "", "http://exa mple.com/flags", "://bad"):
+    _config2.SUBMIT_URL = _bad_url
+    _sub = _Submitter(logger=None)
+    try:
+        _v = _sub.submit(["LKS{TEST00_MAL01}"])
+        if _v != {"LKS{TEST00_MAL01}": "error"} or _sub.pending_count() != 1:
+            _malformed_ok = False
+    except Exception:
+        _malformed_ok = False
+check("malformed SUBMIT_URL -> error + queued, no raise", _malformed_ok, True)
+
+# ---------------------------------------------------------------------------
+# Submitter: an unwritable state file must not kill the round either.
+# ---------------------------------------------------------------------------
+print("[submitter: unwritable state file never raises]")
+_config2.SUBMIT_URL = "http://127.0.0.1:9/flags"  # unreachable -> ERROR
+_config2.SUBMITTED_FILE = _tmp2 / "adir"  # a directory, not a file
+_config2.QUEUE_FILE = _tmp2 / "q2.json"
+(_tmp2 / "adir").mkdir(exist_ok=True)
+_sub2 = _Submitter(logger=None)
+try:
+    _v2 = _sub2.submit(["LKS{TEST00_SAVE01}"])
+    check("unwritable state file -> submit returns, no raise",
+          _v2 == {"LKS{TEST00_SAVE01}": "error"}
+          and _sub2.pending_count() == 1, True)
+except Exception:
+    check("unwritable state file -> submit returns, no raise", False, True)
 
 print()
 if FAILURES:

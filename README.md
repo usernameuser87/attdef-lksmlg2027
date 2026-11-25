@@ -308,7 +308,7 @@ Satu soal tes lengkap disertakan: mock service rentan + mock scoreboard
 di localhost, jadi tidak menyentuh infrastruktur kompetisi.
 
 ```bash
-python3 tests/test_units.py       # parser + scheduler + submitter + net + runner + loader + scanner (65 checks)
+python3 tests/test_units.py       # parser + scheduler + submitter + net + runner + loader + scanner + logger + config (73 checks)
 python3 tests/test_framework.py   # end-to-end (29 checks)
 ```
 
@@ -327,7 +327,7 @@ Yang diverifikasi `test_framework.py`:
   tepat di grid (10.00 detik setelah round 1), tidak ada round yang
   tumpang tindih, dan flag dari challenge lambat itu tetap terkirim.
 
-Hasil terakhir: **65/65 unit tests PASS, 29/29 end-to-end PASS.**
+Hasil terakhir: **73/73 unit tests PASS, 29/29 end-to-end PASS.**
 
 ## Bug yang ditemukan & diperbaiki (2026-11-24)
 
@@ -434,6 +434,59 @@ Tes baru untuk putaran 2 ada di `tests/test_units.py` (submitter state
 loading + https self-signed + health_path + corrupt submitted.json +
 empty env dirs + parser persentase, 15 checks) — total unit jadi 63/63
 sebelum bug 16, 65/65 sesudahnya.
+
+## Bug hunt putaran 3 (2026-11-25)
+
+17. **`ATTDEF_TICK=nan` / `inf` membuat framework crash setelah round 1.**
+    `float()` menerima `"nan"` dan `"inf"`, dan cek lama (`<= 0`) tidak
+    menangkap keduanya: `nan` lolos ke scheduler lalu `math.ceil(nan)`
+    melempar `ValueError` di `advance_after_round`, sementara `inf`
+    lolos ke `main()` lalu `timedelta(seconds=inf)` melempar
+    `OverflowError` di baris `[NEXT ROUND]`. Keduanya crash di luar
+    `try` round, jadi framework mati. Sekarang `config.py` memakai
+    helper `_positive_float()` (finite dan > 0, kalau tidak kembali ke
+    default 180), dan `Scheduler`/`next_round_index` menolak tick
+    non-finite dengan `ValueError` yang jelas di konstruksi (fail fast),
+    bukan crash misterius setelah round 1.
+18. **Timeout negatif / nol / non-finite gagal diam-diam.** Nilai env
+    `ATTDEF_SUBMIT_TIMEOUT=-5` membuat `urlopen` melempar `ValueError`,
+    `0` membuat socket non-blocking (semua submit gagal), dan
+    `timeout=-5` di `config.json` satu challenge membuat exploit-nya
+    mati instan (`TimeoutExpired` seketika) setiap round; `timeout=nan`
+    lebih parah — `subprocess.run` melempar `ValueError` yang tidak
+    ditangkap `run_one`, jadi SATU challenge rusak meracuni SEMUA round.
+    Sekarang semua timeout (env maupun per-challenge) difilter
+    `_positive_float()` / cek `math.isfinite` di loader: nilai buruk
+    jatuh ke default dengan peringatan.
+19. **Log dir yang tidak bisa dipakai mematikan round (dan startup).**
+    `Logger()` crash (`FileExistsError`) kalau `ATTDEF_LOGS_DIR` adalah
+    file yang sudah ada, dan `open_round()` melempar `FileNotFoundError`
+    kalau folder log terhapus setelah startup — round langsung gagal
+    sebelum exploit jalan, padahal logging bukan pekerjaannya. Sekarang
+    `Logger` toleran: mkdir gagal → lanjut console-only dengan
+    peringatan; `open_round` membuat ulang folder yang hilang, dan kalau
+    tetap tidak bisa menulis, round tetap jalan (detail log jadi no-op)
+    dengan satu peringatan saja.
+20. **`SUBMIT_URL` yang salah ketik menghilangkan flag.** `Request()`
+    dibuat DI LUAR `try` di `_send()`, jadi URL tanpa skema (`notaurl`),
+    URL kosong, atau host berisi spasi melempar `ValueError` /
+    `InvalidURL` keluar dari `submit()` — round gagal DAN flag tidak
+    pernah masuk antrean, jadi flag yang sudah rotate hilang selamanya.
+    Sekarang konstruksi `Request` ada di dalam `try`, dan `except`
+    juga menangkap `http.client.HTTPException` (`InvalidURL` BUKAN
+    subclass `ValueError`, jadi tanpa ini tetap lolos). URL rusak kini
+    sekadar transport error: flag tetap antre dan di-retry.
+21. **State file yang tidak bisa ditulis mematikan round.** `_save()`
+    melempar `OSError` (mis. `submitted.json` tertimpa folder) keluar
+    dari `submit()` → round gagal, padahal state in-memory sudah benar.
+    Sekarang `_save()` toleran: gagal tulis dicatat lewat log submission
+    (yang juga toleran) dan round lanjut; paling buruk, restart nanti
+    mengulang submit yang dijawab scoreboard `DUPLICATE`.
+
+Tes baru untuk putaran 3 ada di `tests/test_units.py` (config env
+non-finite, scheduler tick non-finite, loader timeout negatif/nol/
+non-finite, logger dir rusak, submitter URL rusak, submitter state
+rusak — 9 checks) — total unit jadi 73/73.
 
 ## Catatan
 

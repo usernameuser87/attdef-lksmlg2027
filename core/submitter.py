@@ -45,6 +45,7 @@ import os
 import re
 import urllib.error
 import urllib.request
+from http.client import HTTPException
 from pathlib import Path
 
 import config
@@ -261,11 +262,21 @@ class Submitter:
                 )
 
     def _save(self) -> None:
-        _atomic_write_json(
-            config.SUBMITTED_FILE,
-            {"accepted": sorted(self.accepted), "rejected": sorted(self.rejected)},
-        )
-        _atomic_write_json(config.QUEUE_FILE, self.queue)
+        # A state file that cannot be written (disk full, permissions,
+        # a directory in the way) must not kill the round: the
+        # in-memory state is still correct for this process, and the
+        # flags were already sent or queued. Warn (the warning itself
+        # goes through the tolerant submission log) and keep going;
+        # on restart the state may be stale, which only costs a
+        # re-submission that the scoreboard answers DUPLICATE.
+        try:
+            _atomic_write_json(
+                config.SUBMITTED_FILE,
+                {"accepted": sorted(self.accepted), "rejected": sorted(self.rejected)},
+            )
+            _atomic_write_json(config.QUEUE_FILE, self.queue)
+        except OSError as exc:
+            self._log(f"SUBMIT state save failed ({exc}); state kept in memory only")
 
     # -- public API ---------------------------------------------------------
     def pending_count(self) -> int:
@@ -322,16 +333,23 @@ class Submitter:
     # -- transport ----------------------------------------------------------
     def _send(self, batch: list[str]):
         body = json.dumps(batch).encode("utf-8")
-        req = urllib.request.Request(
-            config.SUBMIT_URL,
-            data=body,
-            method="PUT",
-            headers={
-                "X-Team-Token": config.TEAM_TOKEN,
-                "Content-Type": "application/json",
-            },
-        )
         try:
+            # The Request construction is INSIDE the try on purpose: a
+            # malformed SUBMIT_URL (no scheme, a space in the host, ...)
+            # raises ValueError / InvalidURL here, and if that escaped
+            # _send, submit() would raise too — the round would fail
+            # AND the flags would never be queued, so a rotated flag
+            # would be lost forever. Inside the try it is just a
+            # transport error: flags stay queued and are retried.
+            req = urllib.request.Request(
+                config.SUBMIT_URL,
+                data=body,
+                method="PUT",
+                headers={
+                    "X-Team-Token": config.TEAM_TOKEN,
+                    "Content-Type": "application/json",
+                },
+            )
             # Direct connection — never through a proxy (see core/net.py).
             with direct_opener().open(req, timeout=config.SUBMIT_TIMEOUT) as resp:
                 return _parse_response(resp.read(), batch)
@@ -350,7 +368,12 @@ class Submitter:
                     {flag: {"points": None, "msg": None} for flag in batch},
                 )
             return verdicts, details
-        except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
+        except (urllib.error.URLError, OSError, TimeoutError, ValueError,
+                HTTPException) as exc:
+            # HTTPException matters: http.client.InvalidURL (a URL with
+            # a space or control character in the host) is NOT a
+            # ValueError subclass, so without this it escapes _send,
+            # fails the round, and the flags are never queued.
             self._log(f"SUBMIT transport error: {exc}")
             return (
                 {flag: ERROR for flag in batch},

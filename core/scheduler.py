@@ -34,8 +34,8 @@ def next_round_index(start_mono: float, now_mono: float, tick: float) -> int:
     first round. If `now_mono` is exactly on a slot, that slot is
     returned (it is due right now, not missed yet).
     """
-    if tick <= 0:
-        raise ValueError("tick must be > 0")
+    if tick <= 0 or not math.isfinite(tick):
+        raise ValueError("tick must be > 0 and finite")
     if now_mono <= start_mono:
         return 0
     return max(0, math.ceil((now_mono - start_mono) / tick))
@@ -45,8 +45,8 @@ class Scheduler:
     """Anchored tick scheduler. Clock and sleep are injectable for tests."""
 
     def __init__(self, tick: float, clock=time.monotonic, sleep=time.sleep):
-        if tick <= 0:
-            raise ValueError("tick must be > 0")
+        if tick <= 0 or not math.isfinite(tick):
+            raise ValueError("tick must be > 0 and finite")
         self.tick = float(tick)
         self._clock = clock
         self._sleep = sleep

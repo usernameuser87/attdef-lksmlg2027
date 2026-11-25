@@ -13,6 +13,7 @@ can override them — used by the test suite to point at localhost.
 """
 
 import json
+import math
 import os
 from pathlib import Path
 
@@ -45,11 +46,24 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def _env_float(name: str, default: float) -> float:
+def _positive_float(name: str, default: float) -> float:
+    """Env float that must be finite and > 0, else the default.
+
+    A plain float() accepts "nan", "inf" and negatives, and each of
+    those breaks something downstream in a different, confusing way:
+    TICK=nan crashes the scheduler after round 1 (math.ceil(nan)),
+    TICK=inf crashes main() at timedelta(seconds=inf), a negative
+    timeout makes every exploit time out instantly, and a 0 submit
+    timeout turns every submission into a transport error. So any
+    non-finite or non-positive value falls back to the default.
+    """
     try:
-        return float(os.environ.get(name, default))
-    except ValueError:
+        value = float(os.environ.get(name, default))
+    except (TypeError, ValueError):
         return default
+    if not math.isfinite(value) or value <= 0:
+        return default
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -98,11 +112,9 @@ def load_targets():
 # Scheduler
 # ---------------------------------------------------------------------------
 # Interval between round START times, in seconds. 180 = competition tick.
-# A bad value (0, negative, non-numeric) falls back to 180 instead of
-# crashing the framework at startup.
-TICK_SECONDS = _env_float("ATTDEF_TICK", 180)
-if TICK_SECONDS <= 0:
-    TICK_SECONDS = 180
+# A bad value (0, negative, non-numeric, nan, inf) falls back to 180
+# instead of crashing the framework after round 1.
+TICK_SECONDS = _positive_float("ATTDEF_TICK", 180)
 # 0 = run forever. > 0 = stop after that many executed rounds (testing).
 MAX_ROUNDS = _env_int("ATTDEF_MAX_ROUNDS", 0)
 
@@ -113,7 +125,7 @@ SUBMIT_URL = os.environ.get(
     "ATTDEF_SUBMIT_URL", "http://103.145.226.89:8080/flags"
 )
 TEAM_TOKEN = os.environ.get("ATTDEF_TEAM_TOKEN", "")
-SUBMIT_TIMEOUT = _env_float("ATTDEF_SUBMIT_TIMEOUT", 15)
+SUBMIT_TIMEOUT = _positive_float("ATTDEF_SUBMIT_TIMEOUT", 15)
 # How many times a queued flag is retried before a warning is logged.
 # Flags are NEVER dropped for exceeding this — they stay queued and
 # keep being retried, because a lost flag is worse than a late one.
@@ -129,9 +141,9 @@ CHALLENGES_DIR = Path(
 # exploit fail ("No such file or directory", exit 127) because the
 # runner executes scripts with cwd=challenge.folder.
 # Default per-exploit timeout (seconds) when a challenge has no timeout.
-DEFAULT_EXPLOIT_TIMEOUT = _env_float("ATTDEF_EXPLOIT_TIMEOUT", 30)
+DEFAULT_EXPLOIT_TIMEOUT = _positive_float("ATTDEF_EXPLOIT_TIMEOUT", 30)
 # Default health-check timeout (seconds).
-DEFAULT_HEALTH_TIMEOUT = _env_float("ATTDEF_HEALTH_TIMEOUT", 3)
+DEFAULT_HEALTH_TIMEOUT = _positive_float("ATTDEF_HEALTH_TIMEOUT", 3)
 # Parallel workers for health checks and exploit runs. A bad value
 # (0, negative) would crash ThreadPoolExecutor — clamp to the default.
 SCAN_WORKERS = _env_int("ATTDEF_SCAN_WORKERS", 20)

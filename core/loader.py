@@ -18,6 +18,7 @@ with a warning, never a crash.
 """
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -70,10 +71,20 @@ def load_challenges(challenges_dir: Path | None = None) -> list[Challenge]:
             print(f"[WARN] {folder.name}: missing/invalid name or port ({exc}); skipped")
             continue
         # A bad timeout must never crash the whole framework at startup
-        # — fall back to the default and warn.
+        # — fall back to the default and warn. "Bad" covers non-numeric
+        # values AND non-positive / non-finite ones: a timeout of -5
+        # makes every exploit for that challenge die instantly
+        # (TimeoutExpired at once), and a timeout of nan makes
+        # subprocess.run raise ValueError, which poisons the whole
+        # round (run_one only catches TimeoutExpired and OSError).
         try:
             timeout = float(raw.get("timeout", config.DEFAULT_EXPLOIT_TIMEOUT))
         except (TypeError, ValueError):
+            print(f"[WARN] {folder.name}: invalid timeout "
+                  f"{raw.get('timeout')!r}; using default "
+                  f"{config.DEFAULT_EXPLOIT_TIMEOUT:g}s")
+            timeout = config.DEFAULT_EXPLOIT_TIMEOUT
+        if not math.isfinite(timeout) or timeout <= 0:
             print(f"[WARN] {folder.name}: invalid timeout "
                   f"{raw.get('timeout')!r}; using default "
                   f"{config.DEFAULT_EXPLOIT_TIMEOUT:g}s")
