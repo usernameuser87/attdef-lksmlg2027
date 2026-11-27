@@ -149,6 +149,31 @@ SUBMIT_TIMEOUT = _positive_float("ATTDEF_SUBMIT_TIMEOUT", 15)
 SUBMIT_MAX_RETRIES = _env_int("ATTDEF_SUBMIT_MAX_RETRIES", 10)
 
 # ---------------------------------------------------------------------------
+# PLAYIT PLUS 2026 platform mode (ADTickPlatform participant API v2.0.0)
+# ---------------------------------------------------------------------------
+# When PLAYIT_EMAIL and PLAYIT_PASSWORD are set, the framework runs in
+# platform mode: targets come from GET /api/v2/services, the tick comes
+# from GET /api/v2/game/status, and flags go to POST /api/v2/submit
+# with a JWT (see core/platform.py). Without them, the legacy LKSMLG
+# scoreboard behaviour above is used unchanged.
+PLAYIT_BASE_URL = os.environ.get("PLAYIT_BASE_URL", "https://10.0.2.3")
+PLAYIT_EMAIL = os.environ.get("PLAYIT_EMAIL", "")
+PLAYIT_PASSWORD = os.environ.get("PLAYIT_PASSWORD", "")
+PLAYIT_VERIFY_TLS = os.environ.get(
+    "PLAYIT_VERIFY_TLS", "").strip().lower() in ("1", "true", "yes", "on")
+PLATFORM_MODE = bool(PLAYIT_EMAIL and PLAYIT_PASSWORD)
+
+# ---------------------------------------------------------------------------
+# Flag format
+# ---------------------------------------------------------------------------
+# ATTDEF_FLAG_REGEX overrides everything. In platform mode the default
+# is the PLAYIT PLUS format; otherwise the parser's built-in LKS /
+# LKSMLG2027 patterns are used (FLAG_PATTERN = None).
+FLAG_PATTERN = os.environ.get("ATTDEF_FLAG_REGEX") or (
+    r"PLAYITPLUS\{[^}\s<>]+\}" if PLATFORM_MODE else None
+)
+
+# ---------------------------------------------------------------------------
 # Execution
 # ---------------------------------------------------------------------------
 CHALLENGES_DIR = Path(

@@ -4,6 +4,48 @@ Framework otomatisasi Attack-Defense CTF. Python hanya jadi orchestrator,
 **Bash tetap bahasa utama exploit**. Sekali jalan, jalan terus — satu round
 tiap 180 detik, flag dikirim otomatis ke scoreboard.
 
+## Mode PLAYIT PLUS 2026 (platform ADTickPlatform, API v2.0.0)
+
+Selain mode scoreboard LKSMLG di bawah, framework ini punya **mode
+platform** untuk PLAYIT PLUS 2026. Aktifkan lewat `.env`:
+
+```bash
+PLAYIT_BASE_URL=https://10.0.2.3   # alamat platform dari panitia
+PLAYIT_EMAIL=email-akun-tim-kamu
+PLAYIT_PASSWORD=password-akun-tim-kamu
+```
+
+Begitu `PLAYIT_EMAIL` + `PLAYIT_PASSWORD` terisi, perilaku framework
+berubah mengikuti API platform — tanpa mengubah cara menulis exploit:
+
+- **Login JWT otomatis** ke `POST /api/v2/authenticate`, token di-cache
+  dan di-refresh sekali kalau ditolak (401/403).
+- **Target dinamis** dari `GET /api/v2/services` (peta
+  challenge → tim → `host:port`), diambil ulang tiap round. Tim sendiri
+  (dari `GET /api/v2/session`) otomatis dikecualikan.
+- **Tick mengikuti platform**: durasi round diambil dari
+  `scheduler.interval_seconds` di `GET /api/v2/game/status`.
+- **Submit** ke `POST /api/v2/submit`, batch maksimal 128 flag,
+  verdict per flag (`accepted` / `duplicate` / `invalid`) dibaca dari
+  `results`. Selama `accepting_submissions` false, flag **ditahan di
+  antrean** dan dikirim round berikutnya — tidak hangus.
+- **Format flag** otomatis `PLAYITPLUS{...}`.
+
+Yang perlu kamu lakukan per challenge: di `config.json` folder
+challenge, isi **`"api_id"`** dengan id challenge di platform, contoh
+template ada di `challenges/example-playit/`. Sisanya sama persis:
+`bash exploit.sh <IP> <PORT>`, flag di-print ke stdout.
+
+Catatan jaringan: koneksi Python framework selalu langsung (tidak
+lewat proxy), tapi script Bash kamu mewarisi environment shell — kalau
+laptopmu memakai proxy, tambahkan subnet VPN kompetisi ke `NO_PROXY`
+supaya `curl` di exploit tidak mampir ke proxy:
+`export NO_PROXY="$NO_PROXY,10.0.0.0/8"` (sesuaikan dengan subnet VPN).
+
+Mode ini sudah dites end-to-end melawan mock platform PLAYIT
+(auth → services → exploit → submit → accepted untuk 2 tim dummy)
+dan unit test-nya ada di `tests/test_playit.py` (17 checks).
+
 ## Langkah-langkah penggunaan
 
 ### 1. Siapkan mesin
@@ -310,6 +352,7 @@ di localhost, jadi tidak menyentuh infrastruktur kompetisi.
 ```bash
 python3 tests/test_units.py       # parser + scheduler + submitter + net + runner + loader + scanner + logger + config (80 checks)
 python3 tests/test_framework.py   # end-to-end (29 checks)
+python3 tests/test_playit.py      # mode platform PLAYIT: parser respons + chunking 128 + antrean + peta services (17 checks)
 ```
 
 Yang diverifikasi `test_framework.py`:

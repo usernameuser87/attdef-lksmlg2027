@@ -26,6 +26,7 @@ import config
 from core.loader import load_challenges
 from core.logger import Logger
 from core.parser import extract_flags
+from core.platform import PlatformClient, PlatformError
 from core.runner import run_all
 from core.scanner import check_all
 from core.scheduler import Scheduler
@@ -41,8 +42,52 @@ _DISPLAY_VERDICT = {
 }
 
 
-def run_round(round_no, targets, challenges, logger, submitter):
-    """One full round. Returns nothing; never raises (errors are logged)."""
+def build_platform_pairs(platform, challenges, own_team_id):
+    """(target, challenge) pairs from GET /api/v2/services (PLAYIT mode).
+
+    The map is {challenge_id: {team_id: ["host:port", ...]}}. The own
+    team is excluded (attacking yourself only wastes the tick). A
+    challenge folder joins in via "api_id" in its config.json;
+    unmapped challenges are skipped. A failed fetch yields no pairs —
+    the round still runs and queued flags are still submitted.
+    """
+    try:
+        services = platform.services()
+    except PlatformError:
+        return []
+    pairs = []
+    for chal in challenges:
+        if chal.api_id is None:
+            continue
+        teams = services.get(str(chal.api_id))
+        if not isinstance(teams, dict):
+            continue
+        for team_id, endpoints in teams.items():
+            if own_team_id is not None and str(team_id) == str(own_team_id):
+                continue
+            if not isinstance(endpoints, list):
+                continue
+            for endpoint in endpoints:
+                host, _, port = str(endpoint).rpartition(":")
+                if not host:
+                    continue
+                try:
+                    port_no = int(port)
+                except ValueError:
+                    port_no = chal.port
+                pairs.append((
+                    {"name": f"Tim {team_id}", "ip": host, "port": port_no},
+                    chal,
+                ))
+    return pairs
+
+
+def run_round(round_no, targets, challenges, logger, submitter, pairs=None):
+    """One full round. Returns nothing; never raises (errors are logged).
+
+    pairs: explicit (target, challenge) pairs (platform mode). None =
+    the legacy cross-product of targets x challenges.
+    """
     started = time.monotonic()
     try:
         # open_round is inside the try: if the log file cannot be
@@ -51,12 +96,13 @@ def run_round(round_no, targets, challenges, logger, submitter):
         # this function never raises.
         logger.open_round(round_no)
         logger.line(f"[ROUND {round_no}] START")
-        pairs = [(t, c) for t in targets for c in challenges]
+        if pairs is None:
+            pairs = [(t, c) for t in targets for c in challenges]
         online = check_all(pairs)
 
         online_pairs = []
         for target, chal in pairs:
-            if online.get((target["ip"], chal.slug)):
+            if online.get((target["ip"], target.get("port"), chal.slug)):
                 logger.line(f"[ONLINE] {target['name']} | {chal.name}")
                 online_pairs.append((target, chal))
             else:
@@ -114,40 +160,70 @@ def run_round(round_no, targets, challenges, logger, submitter):
 
 def main() -> int:
     logger = Logger()
+    platform = PlatformClient(logger=logger) if config.PLATFORM_MODE else None
+    tick = config.TICK_SECONDS
+    own_team_id = None
     print("=" * 60, flush=True)
     print("Auto ATTDEF Framework — LKSMLG 2027", flush=True)
-    print(f"Tick: {config.TICK_SECONDS:g}s (from round START, monotonic)", flush=True)
-    print(f"Submit API: {config.SUBMIT_URL}", flush=True)
-    if not config.TEAM_TOKEN:
-        print(
-            "[WARN] ATTDEF_TEAM_TOKEN is empty — flags will be QUEUED, "
-            "not submitted. Set it in .env",
-            flush=True,
-        )
+    if platform is not None:
+        print(f"Mode: PLAYIT PLUS 2026 platform ({config.PLAYIT_BASE_URL})",
+              flush=True)
+        # The platform is the tick authority in this mode; a failed
+        # fetch falls back to ATTDEF_TICK inside tick_seconds().
+        tick = platform.tick_seconds(config.TICK_SECONDS)
+        print(f"Tick: {tick:g}s (platform game/status, from round START, "
+              f"monotonic)", flush=True)
+        try:
+            own_team_id = platform.my_team_id()
+        except PlatformError as exc:
+            print(f"[WARN] cannot read own team from the platform ({exc}); "
+                  f"own services will not be excluded from targets",
+                  flush=True)
+        if own_team_id is not None:
+            print(f"Own team id: {own_team_id} (excluded from targets)",
+                  flush=True)
+    else:
+        print(f"Tick: {tick:g}s (from round START, monotonic)", flush=True)
+        print(f"Submit API: {config.SUBMIT_URL}", flush=True)
+        if not config.TEAM_TOKEN:
+            print(
+                "[WARN] ATTDEF_TEAM_TOKEN is empty — flags will be QUEUED, "
+                "not submitted. Set it in .env",
+                flush=True,
+            )
     print("=" * 60, flush=True)
 
-    targets = config.load_targets()
+    targets = [] if platform is not None else config.load_targets()
     all_challenges = load_challenges()
     challenges = [c for c in all_challenges if c.enabled]
     disabled = len(all_challenges) - len(challenges)
-    if not targets:
+    if platform is None and not targets:
         Logger.fatal("no targets configured")
         return 1
     if not challenges:
         Logger.fatal("no enabled challenges found — check challenges/*/config.json")
         return 1
-    print(f"Targets: {len(targets)} | Challenges: {len(challenges)}"
-          + (f" ({disabled} disabled)" if disabled else ""), flush=True)
+    if platform is not None:
+        unmapped = [c.name for c in challenges if c.api_id is None]
+        print(f"Targets: from the platform services map | "
+              f"Challenges: {len(challenges)}"
+              + (f" ({disabled} disabled)" if disabled else ""), flush=True)
+        if unmapped:
+            print(f"[WARN] challenges without api_id are skipped in "
+                  f"platform mode: {', '.join(unmapped)}", flush=True)
+    else:
+        print(f"Targets: {len(targets)} | Challenges: {len(challenges)}"
+              + (f" ({disabled} disabled)" if disabled else ""), flush=True)
     for chal in challenges:
         print(f"  - {chal.name} (port {chal.port}, {chal.protocol}, "
               f"timeout {chal.timeout:g}s, {chal.script.name})", flush=True)
 
-    submitter = Submitter(logger=logger)
+    submitter = Submitter(logger=logger, platform=platform)
     if submitter.pending_count():
         print(f"[QUEUE] {submitter.pending_count()} flag(s) from a previous run "
               f"will be retried", flush=True)
 
-    scheduler = Scheduler(config.TICK_SECONDS)
+    scheduler = Scheduler(tick)
     scheduler.anchor()
 
     index = 0  # 0-based round index; displayed as index + 1
@@ -155,7 +231,13 @@ def main() -> int:
     try:
         while True:
             scheduler.wait_until(index)
-            run_round(index + 1, targets, challenges, logger, submitter)
+            pairs = None
+            if platform is not None:
+                # Fresh pairs every round: the services map can change
+                # between ticks (services restart, teams drop out).
+                pairs = build_platform_pairs(platform, challenges, own_team_id)
+            run_round(index + 1, targets, challenges, logger, submitter,
+                      pairs=pairs)
             executed += 1
             if config.MAX_ROUNDS and executed >= config.MAX_ROUNDS:
                 print(f"[DONE] reached MAX_ROUNDS={config.MAX_ROUNDS}", flush=True)
@@ -164,12 +246,12 @@ def main() -> int:
             if skipped:
                 logger.line(
                     f"[SKIP] {skipped} round(s) skipped — previous round "
-                    f"overran the {config.TICK_SECONDS:g}s tick"
+                    f"overran the {tick:g}s tick"
                 )
             wait = scheduler.seconds_until(index)
             wall_next = datetime.now() + timedelta(seconds=max(0, wait))
             logger.line(
-                f"[NEXT ROUND] {config.TICK_SECONDS:g}-second schedule | "
+                f"[NEXT ROUND] {tick:g}-second schedule | "
                 f"Round {index + 1} at {wall_next.strftime('%H:%M:%S')} "
                 f"(in {max(0, wait):.0f}s)"
             )

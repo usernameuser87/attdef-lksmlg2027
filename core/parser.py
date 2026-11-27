@@ -13,6 +13,8 @@ Pipeline (in order):
 Supported formats:
   * LKS{...}
   * LKSMLG2027{...}
+  * PLAYITPLUS{...} — when platform mode is on (config.FLAG_PATTERN),
+    or whatever ATTDEF_FLAG_REGEX is set to.
 
 The longer alternative (LKSMLG2027) is tried FIRST, otherwise the
 regex would match the "LKS" prefix of an LKSMLG2027 flag and stop
@@ -23,6 +25,8 @@ Duplicates are removed, first occurrence wins, order is preserved.
 """
 
 import re
+
+import config
 
 # ANSI: CSI sequences, OSC sequences, charset switches.
 _ANSI_RE = re.compile(
@@ -50,6 +54,16 @@ _TAG_RE = re.compile(r"<[^>]*>")
 
 # Longer alternative first. Body: no whitespace, no < >, no }.
 _FLAG_RE = re.compile(r"LKSMLG2027\{[^}\s<>]+\}|LKS\{[^}\s<>]+\}")
+
+# A configured pattern (platform mode / ATTDEF_FLAG_REGEX) replaces the
+# built-in LKS patterns. A broken custom regex must never kill the
+# framework at import time: warn and keep the built-in patterns.
+if config.FLAG_PATTERN:
+    try:
+        _FLAG_RE = re.compile(config.FLAG_PATTERN)
+    except re.error as exc:
+        print(f"[WARN] invalid ATTDEF_FLAG_REGEX {config.FLAG_PATTERN!r} "
+              f"({exc}); using the built-in LKS patterns")
 
 
 def clean(text: str) -> str:

@@ -25,11 +25,15 @@ from core.loader import Challenge
 from core.net import direct_opener, direct_opener_unverified
 
 
-def check_one(ip: str, challenge: Challenge, timeout: float | None = None) -> bool:
+def check_one(ip: str, challenge: Challenge, timeout: float | None = None,
+              port: int | None = None) -> bool:
     timeout = timeout if timeout is not None else config.DEFAULT_HEALTH_TIMEOUT
+    # Platform mode passes a per-(team, challenge) port from the
+    # services map; without an override the challenge's own port rules.
+    port = challenge.port if port is None else port
     if challenge.protocol in ("http", "https"):
         path = challenge.health_path or "/"
-        url = f"{challenge.protocol}://{ip}:{challenge.port}{path}"
+        url = f"{challenge.protocol}://{ip}:{port}{path}"
         req = urllib.request.Request(url, method="GET")
         try:
             # Direct connection — never through a proxy (see core/net.py).
@@ -61,25 +65,33 @@ def check_one(ip: str, challenge: Challenge, timeout: float | None = None) -> bo
             return False
     # tcp: connect only.
     try:
-        with socket.create_connection((ip, challenge.port), timeout=timeout):
+        with socket.create_connection((ip, port), timeout=timeout):
             return True
     except (OSError, TimeoutError, ValueError):
         return False
 
 
 def check_all(pairs, timeout: float | None = None) -> dict:
-    """pairs: list of (target_dict, Challenge). Returns {(ip, slug): bool}."""
+    """pairs: list of (target_dict, Challenge).
+
+    Returns {(ip, port_or_None, slug): bool} — the port is part of the
+    key because platform mode can run the same challenge on the same
+    host at different ports for different teams.
+    """
     results: dict = {}
     if not pairs:
         return results
     with ThreadPoolExecutor(max_workers=config.SCAN_WORKERS) as pool:
         futures = {
-            pool.submit(check_one, target["ip"], chal, timeout): (target, chal)
+            pool.submit(check_one, target["ip"], chal, timeout,
+                        target.get("port")): (target, chal)
             for target, chal in pairs
         }
         for fut, (target, chal) in futures.items():
             try:
-                results[(target["ip"], chal.slug)] = bool(fut.result())
+                results[(target["ip"], target.get("port"),
+                         chal.slug)] = bool(fut.result())
             except Exception:
-                results[(target["ip"], chal.slug)] = False
+                results[(target["ip"], target.get("port"),
+                         chal.slug)] = False
     return results

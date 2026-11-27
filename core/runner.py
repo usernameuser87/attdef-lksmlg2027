@@ -43,11 +43,14 @@ def run_one(target: dict, challenge: Challenge) -> ExecResult:
     result = ExecResult(
         target_name=target["name"], target_ip=target["ip"], challenge=challenge
     )
-    cmd = ["bash", str(challenge.script), target["ip"], str(challenge.port)]
+    # Platform mode: the target dict carries the per-(team, challenge)
+    # port from the services map. Legacy mode: the challenge's port.
+    port = target.get("port", challenge.port)
+    cmd = ["bash", str(challenge.script), target["ip"], str(port)]
     # IP/PORT as env vars too (see module docstring): a script may use
     # $IP/$PORT directly, or $1/$2. Both carry the same values.
     env = {**os.environ,
-           "IP": target["ip"], "PORT": str(challenge.port)}
+           "IP": target["ip"], "PORT": str(port)}
     try:
         proc = subprocess.run(
             cmd,

@@ -38,6 +38,13 @@ other scoreboard:
   * [{"flag": "...", "status": "accepted"}, ...]
   * {"flags": {"LKS{...}": "accepted", ...}}
 Anything else is treated as "unknown" -> the flags stay queued.
+
+PLATFORM MODE (PLAYIT PLUS 2026, API v2.0.0): when a PlatformClient
+is attached, flags go to POST /api/v2/submit in batches of at most
+128 with a JWT (core/platform.py). The response is the {"results":
+[{"flag", "status", "detail"}]} shape above, with statuses
+accepted / duplicate / invalid. While game/status says submissions
+are closed, flags are held in the queue instead of being sent.
 """
 
 import json
@@ -50,6 +57,7 @@ from pathlib import Path
 
 import config
 from core.net import direct_opener
+from core.platform import PlatformError
 
 # Canonical verdicts.
 ACCEPTED = "accepted"
@@ -158,18 +166,30 @@ def _parse_response(body: bytes, sent: list[str]):
             if isinstance(values, list):
                 hit = True
                 for flag in values:
-                    if flag in verdicts:
-                        verdicts[str(flag)] = verdict
+                    if isinstance(flag, str) and flag in verdicts:
+                        verdicts[flag] = verdict
         if hit:
             return verdicts, details
         # Shape 2: {"results": [{"flag":..., "status":...}, ...]}
+        # (This is also the PLAYIT platform shape; its items carry a
+        # human-readable "detail" that is kept for the log.)
         results = data.get("results")
         if isinstance(results, list):
             for item in results:
                 if isinstance(item, dict):
                     flag = item.get("flag")
-                    if flag in verdicts:
-                        verdicts[str(flag)] = _normalise_status(item.get("status"))
+                    # isinstance guard: a non-string flag (list/dict)
+                    # would raise TypeError on the dict membership
+                    # test and take the whole batch's verdicts down
+                    # with it — skip the item instead.
+                    if isinstance(flag, str) and flag in verdicts:
+                        verdicts[flag] = _normalise_status(item.get("status"))
+                        detail = item.get("detail", item.get("msg"))
+                        if detail is not None:
+                            details[flag] = {
+                                "points": _points_from_msg(detail),
+                                "msg": str(detail),
+                            }
             return verdicts, details
         # Shape 3: {"flags": {"LKS{...}": "accepted", ...}}
         flags_map = data.get("flags")
@@ -185,9 +205,10 @@ def _parse_response(body: bytes, sent: list[str]):
             if not isinstance(item, dict):
                 continue
             flag = item.get("flag")
-            if flag not in verdicts:
+            # isinstance guard, same reason as Shape 2: an unhashable
+            # flag value must not crash the parse and lose the batch.
+            if not isinstance(flag, str) or flag not in verdicts:
                 continue
-            flag = str(flag)
             msg = item.get("msg", item.get("message"))
             if item.get("status") is not None:
                 verdicts[flag] = _normalise_status(item.get("status"))
@@ -208,8 +229,11 @@ def _atomic_write_json(path: Path, payload) -> None:
 
 
 class Submitter:
-    def __init__(self, logger=None):
+    def __init__(self, logger=None, platform=None):
         self.logger = logger
+        # Platform mode (PLAYIT): a core.platform.PlatformClient, or
+        # None for the legacy LKSMLG scoreboard path.
+        self.platform = platform
         self.accepted: set[str] = set()
         self.rejected: set[str] = set()  # terminal non-accepted verdicts
         self.queue: list[dict] = []  # [{"flag": str, "attempts": int}]
@@ -307,7 +331,18 @@ class Submitter:
         if not batch:
             return {}
 
-        if not config.TEAM_TOKEN:
+        if self.platform is not None:
+            # Platform mode: while the platform says submissions are
+            # closed, hold everything in the queue — sending would
+            # only burn the flags' one-tick lifetime against a closed
+            # endpoint. "Unknown" (None) still tries: the submit
+            # endpoint itself gives the real answer.
+            if self.platform.accepting_submissions() is False:
+                self._log("SUBMIT held: platform is not accepting "
+                          "submissions right now (flags kept in queue)")
+                self._enqueue(batch, reason="submissions closed")
+                return {flag: ERROR for flag in batch}
+        elif not config.TEAM_TOKEN:
             self._log("SUBMIT aborted: ATTDEF_TEAM_TOKEN is empty (set it in .env)")
             self._enqueue(batch, reason="no token")
             return {flag: ERROR for flag in batch}
@@ -332,6 +367,35 @@ class Submitter:
 
     # -- transport ----------------------------------------------------------
     def _send(self, batch: list[str]):
+        if self.platform is not None:
+            return self._send_platform(batch)
+        return self._send_legacy(batch)
+
+    def _send_platform(self, batch: list[str]):
+        """PLAYIT mode: POST /api/v2/submit in chunks of at most 128.
+
+        A chunk that fails (transport error, 429, auth) marks only its
+        own flags ERROR — they stay queued; other chunks still go out.
+        """
+        verdicts: dict[str, str] = {}
+        details: dict[str, dict] = {}
+        for start in range(0, len(batch), 128):
+            chunk = batch[start:start + 128]
+            try:
+                data = self.platform.submit_flags(chunk)
+            except PlatformError as exc:
+                self._log(f"SUBMIT platform error: {exc}")
+                for flag in chunk:
+                    verdicts[flag] = ERROR
+                    details[flag] = {"points": None, "msg": None}
+                continue
+            chunk_verdicts, chunk_details = _parse_response(
+                json.dumps(data).encode("utf-8"), chunk)
+            verdicts.update(chunk_verdicts)
+            details.update(chunk_details)
+        return verdicts, details
+
+    def _send_legacy(self, batch: list[str]):
         body = json.dumps(batch).encode("utf-8")
         try:
             # The Request construction is INSIDE the try on purpose: a

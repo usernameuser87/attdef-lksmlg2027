@@ -54,6 +54,10 @@ class Challenge:
     script: Path
     enabled: bool
     folder: Path
+    # Platform challenge id (PLAYIT mode): the "api_id" in config.json
+    # maps this folder to a challenge in GET /api/v2/services. None =
+    # not mapped (the challenge is skipped in platform mode).
+    api_id: str | None = None
 
     @property
     def slug(self) -> str:
@@ -125,6 +129,7 @@ def load_challenges(challenges_dir: Path | None = None) -> list[Challenge]:
             print(f"[WARN] {folder.name}: script {script_name!r} not found "
                   f"or not a file; skipped")
             continue
+        api_id = raw.get("api_id")
         found.append(
             Challenge(
                 name=name,
@@ -135,6 +140,7 @@ def load_challenges(challenges_dir: Path | None = None) -> list[Challenge]:
                 script=script,
                 enabled=_as_bool(raw.get("enabled", True)),
                 folder=folder,
+                api_id=None if api_id is None else str(api_id),
             )
         )
     return found
