@@ -4,25 +4,19 @@ Framework otomatisasi Attack-Defense CTF. Python hanya jadi orchestrator,
 **Bash tetap bahasa utama exploit**. Sekali jalan, jalan terus — satu round
 tiap 180 detik, flag dikirim otomatis ke scoreboard.
 
-## Mode PLAYIT PLUS 2026 (platform ADTickPlatform, API v2.0.0)
+## Mode PLAYIT PLUS 2026 — panduan lengkap
 
 Selain mode scoreboard LKSMLG di bawah, framework ini punya **mode
-platform** untuk PLAYIT PLUS 2026. Aktifkan lewat `.env`:
-
-```bash
-PLAYIT_BASE_URL=https://10.0.2.3   # alamat platform dari panitia
-PLAYIT_EMAIL=email-akun-tim-kamu
-PLAYIT_PASSWORD=password-akun-tim-kamu
-```
-
-Begitu `PLAYIT_EMAIL` + `PLAYIT_PASSWORD` terisi, perilaku framework
-berubah mengikuti API platform — tanpa mengubah cara menulis exploit:
+platform** untuk PLAYIT PLUS 2026 (platform ADTickPlatform, API
+v2.0.0). Di mode ini kamu **cuma menulis exploit per challenge** —
+sisanya diurus framework:
 
 - **Login JWT otomatis** ke `POST /api/v2/authenticate`, token di-cache
   dan di-refresh sekali kalau ditolak (401/403).
 - **Target dinamis** dari `GET /api/v2/services` (peta
   challenge → tim → `host:port`), diambil ulang tiap round. Tim sendiri
-  (dari `GET /api/v2/session`) otomatis dikecualikan.
+  (dari `GET /api/v2/session`) otomatis dikecualikan — flag tim sendiri
+  tidak pernah diserang maupun di-submit.
 - **Tick mengikuti platform**: durasi round diambil dari
   `scheduler.interval_seconds` di `GET /api/v2/game/status`.
 - **Submit** ke `POST /api/v2/submit`, batch maksimal 128 flag,
@@ -31,24 +25,177 @@ berubah mengikuti API platform — tanpa mengubah cara menulis exploit:
   antrean** dan dikirim round berikutnya — tidak hangus.
 - **Format flag** otomatis `PLAYITPLUS{...}`.
 
-Yang perlu kamu lakukan per challenge: di `config.json` folder
-challenge, isi **`"api_id"`** dengan id challenge di platform, contoh
-template ada di `challenges/example-playit/`. Sisanya sama persis:
-`bash exploit.sh <IP> <PORT>`, flag di-print ke stdout.
+### Langkah 1 — Ambil kode terbaru
 
-Catatan jaringan: koneksi Python framework selalu langsung (tidak
-lewat proxy), tapi script Bash kamu mewarisi environment shell — kalau
-laptopmu memakai proxy, tambahkan subnet VPN kompetisi ke `NO_PROXY`
-supaya `curl` di exploit tidak mampir ke proxy:
-`export NO_PROXY="$NO_PROXY,10.0.0.0/8"` (sesuaikan dengan subnet VPN).
-Penting: isi juga versi huruf kecilnya (`no_proxy`), karena `curl`
-mendahulukan `no_proxy` daripada `NO_PROXY` — kalau hanya yang besar
-yang diisi, `curl` bisa tetap lewat proxy dan gagal diam-diam
-(kode exit 52, "empty reply").
+```bash
+git clone https://github.com/usernameuser87/attdef-lksmlg2027.git
+cd attdef-lksmlg2027
+```
 
-Mode ini sudah dites end-to-end melawan mock platform PLAYIT
-(auth → services → exploit → submit → accepted untuk 2 tim dummy)
-dan unit test-nya ada di `tests/test_playit.py` (17 checks).
+Kalau sudah pernah clone, cukup `git pull`. Syaratnya cuma Python
+3.8+ — tidak ada yang perlu di-`pip install`, semua stdlib.
+
+### Langkah 2 — Isi kredensial platform di `.env`
+
+```bash
+cp .env.example .env
+```
+
+Buka `.env` dan isi tiga baris ini dengan akun peserta dari panitia:
+
+```bash
+PLAYIT_BASE_URL=https://10.0.2.3   # alamat platform dari panitia
+PLAYIT_EMAIL=email-akun-tim-kamu
+PLAYIT_PASSWORD=password-akun-tim-kamu
+```
+
+| Variabel | Isi |
+| --- | --- |
+| `PLAYIT_BASE_URL` | Alamat platform. Default di `.env.example` adalah `https://10.0.2.3` — ganti kalau panitia memberi alamat lain. |
+| `PLAYIT_EMAIL` | Email akun peserta tim kamu. |
+| `PLAYIT_PASSWORD` | Password akun peserta tim kamu. |
+| `PLAYIT_VERIFY_TLS` | Opsional. `1` = verifikasi sertifikat TLS platform. Default mati (platform CTF biasanya self-signed). |
+
+Begitu `PLAYIT_EMAIL` + `PLAYIT_PASSWORD` terisi, framework otomatis
+masuk mode PLAYIT. Kalau keduanya kosong, framework jalan di mode
+LKSMLG lama (target statis + scoreboard) — jadi pastikan langkah ini
+tidak terlewat. File `.env` asli tidak ikut ter-commit (sudah di
+`.gitignore`).
+
+### Langkah 3 — Konek WireGuard, lalu cek platform
+
+Semua target hanya bisa dijangkau lewat VPN kompetisi:
+
+1. Ambil config WireGuard kamu dari `GET /api/v2/me/wireguard`
+   (perlu login dulu), atau pakai file config yang dibagikan panitia.
+2. Import config itu ke WireGuard dan aktifkan.
+3. Cek platform merespons:
+
+```bash
+curl -s https://10.0.2.3/api/v2/game/status
+```
+
+(sesuaikan alamatnya dengan `PLAYIT_BASE_URL` kamu). Balasan JSON
+berisi `scheduler.interval_seconds` (durasi tick) dan
+`match.accepting_submissions` (apakah submit sedang dibuka).
+
+### Langkah 4 — Atur pengecualian proxy (kalau laptopmu memakai proxy)
+
+Koneksi Python framework selalu langsung (tidak lewat proxy), tapi
+script Bash kamu mewarisi environment shell. Kalau laptopmu punya
+variabel proxy, tambahkan subnet VPN kompetisi ke **kedua** variabel
+ini sebelum menjalankan framework:
+
+```bash
+export NO_PROXY="$NO_PROXY,10.0.0.0/8"
+export no_proxy="$no_proxy,10.0.0.0/8"
+```
+
+(sesuaikan `10.0.0.0/8` dengan subnet VPN dari config WireGuard).
+Versi huruf kecil **wajib** diisi juga: `curl` mendahulukan `no_proxy`
+daripada `NO_PROXY`, jadi kalau hanya yang besar yang diisi, `curl` di
+dalam exploit bisa tetap mampir ke proxy dan gagal diam-diam —
+gejalanya flag tidak pernah ketangkap dan curl keluar dengan kode 52
+("empty reply from server").
+
+### Langkah 5 — Buat satu folder per challenge
+
+Di dalam folder `challenges/`, buat satu folder per challenge. Isinya
+dua file (template siap salin ada di `challenges/example-playit/`):
+
+```text
+challenges/
+  nama-challenge/
+    config.json
+    exploit.sh
+```
+
+`config.json`:
+
+```json
+{"name": "nama-challenge", "api_id": "1", "port": 8000, "script": "exploit.sh", "enabled": true, "timeout": 15}
+```
+
+| Field | Isi |
+| --- | --- |
+| `api_id` | **Id challenge di platform** (lihat `GET /api/v2/challenges` atau halaman lomba). Field inilah yang mencocokkan folder ini dengan peta target dari platform. |
+| `port` | Port cadangan — port asli per tim selalu diambil dari peta `services` platform. |
+| `enabled` | `false` untuk menonaktifkan challenge ini tanpa menghapus foldernya. |
+| `timeout` | Batas detik per satu kali jalan exploit. |
+
+`exploit.sh` — kontraknya sederhana:
+
+```bash
+#!/usr/bin/env bash
+# $1 = IP target, $2 = port target (dikirim framework, beda per tim lawan)
+# IP dan PORT yang sama juga tersedia sebagai variabel $IP dan $PORT.
+curl -s --max-time 5 "http://$1:$2/jalur-flag-kamu"
+```
+
+Tulis exploit-mu seperti script Bash biasa, dan pastikan **flag
+tercetak ke stdout**. Framework memanggil script ini sekali per tim
+lawan per tick, mengekstrak semua pola `PLAYITPLUS{...}` dari
+output-nya, lalu mengurus submit. Jangan lupa `chmod +x exploit.sh`.
+
+### Langkah 6 — Jalankan dan baca output-nya
+
+Tes satu round dulu (berhenti sendiri setelah 1 round):
+
+```bash
+ATTDEF_MAX_ROUNDS=1 python3 main.py
+```
+
+Kalau aman, jalankan penuh dan biarkan terminal terbuka selama lomba:
+
+```bash
+python3 main.py
+```
+
+Baris-baris penting di output:
+
+```text
+Mode: PLAYIT PLUS 2026 platform (https://10.0.2.3)   <- mode benar
+Own team id: 101 (excluded from targets)             <- tim sendiri aman
+[ONLINE] Tim 102 | banking                           <- target terjangkau
+[OFFLINE] Tim 103 | banking | SKIPPED                <- target tidak terjangkau, dilewati
+[FLAG] PLAYITPLUS{...}                               <- flag ketangkap dari exploit
+[SUBMIT] Accepted | PLAYITPLUS{...}                  <- verdict platform per flag
+[ROUND 1] FINISHED ... | flags found: 3 | accepted: 1
+```
+
+Berhenti dengan `Ctrl+C`. Flag yang belum terkirim (misalnya submit
+sedang ditutup platform) tersimpan di antrean `data/queue.json` dan
+dikirim lagi di round berikutnya.
+
+### Kalau framework bermasalah di tengah lomba (fallback manual)
+
+Exploit tetap bisa dijalankan dan di-submit dengan tangan:
+
+```bash
+bash challenges/nama-challenge/exploit.sh <IP-target> <PORT-target>
+
+TOKEN=$(curl -s -X POST https://10.0.2.3/api/v2/authenticate \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"email-akun-tim-kamu","password":"password-akun-tim-kamu"}' \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
+
+curl -s -X POST https://10.0.2.3/api/v2/submit \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"flags":["PLAYITPLUS{flag-yang-ketangkap}"]}'
+```
+
+Maksimal 128 flag per submit. Jangan submit flag tim sendiri.
+
+### Status pengujian mode ini
+
+- Unit test khusus mode platform: `tests/test_playit.py` (17 checks),
+  dan seluruh test lama tetap lolos.
+- End-to-end melawan mock platform: auth → services → exploit →
+  submit → **Accepted** untuk dua tim dummy.
+- End-to-end melawan ADTickPlatform asli (build lokal, match
+  dijalankan): auth, peta services, health check, exploit, dan submit
+  semua bekerja; flag dummy dibalas `Invalid` — benar, karena platform
+  hanya menerima flag HMAC yang diterbitkannya sendiri.
 
 ## Langkah-langkah penggunaan
 
