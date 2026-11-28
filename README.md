@@ -41,6 +41,10 @@ lewat proxy), tapi script Bash kamu mewarisi environment shell — kalau
 laptopmu memakai proxy, tambahkan subnet VPN kompetisi ke `NO_PROXY`
 supaya `curl` di exploit tidak mampir ke proxy:
 `export NO_PROXY="$NO_PROXY,10.0.0.0/8"` (sesuaikan dengan subnet VPN).
+Penting: isi juga versi huruf kecilnya (`no_proxy`), karena `curl`
+mendahulukan `no_proxy` daripada `NO_PROXY` — kalau hanya yang besar
+yang diisi, `curl` bisa tetap lewat proxy dan gagal diam-diam
+(kode exit 52, "empty reply").
 
 Mode ini sudah dites end-to-end melawan mock platform PLAYIT
 (auth → services → exploit → submit → accepted untuk 2 tim dummy)
