@@ -169,7 +169,23 @@ dikirim lagi di round berikutnya.
 
 ### Kalau framework bermasalah di tengah lomba (fallback manual)
 
-Exploit tetap bisa dijalankan dan di-submit dengan tangan:
+Sudah ada script siap pakai: **`tools/playit.sh`** — helper Bash untuk
+API platform. Konfigurasinya membaca `.env` yang sama dengan framework:
+
+```bash
+./tools/playit.sh status                    # status game (tick, submit dibuka?)
+./tools/playit.sh challenges                # daftar challenge + id-nya
+./tools/playit.sh session                   # sesi kamu (id tim sendiri)
+./tools/playit.sh services                  # peta target per challenge/tim
+./tools/playit.sh submit 'PLAYITPLUS{...}'  # submit satu/lebih flag (batch <=128)
+./tools/playit.sh submit-file flags.txt     # ekstrak semua PLAYITPLUS{...} dari file, submit semua
+```
+
+Token JWT di-cache otomatis di `data/.playit-token` dan di-refresh
+sendiri kalau ditolak platform.
+
+Kalau script itu pun tidak bisa dipakai, exploit tetap bisa dijalankan
+dan di-submit dengan tangan:
 
 ```bash
 bash challenges/nama-challenge/exploit.sh <IP-target> <PORT-target>
